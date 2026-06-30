@@ -81,9 +81,28 @@ def clear_target_data(sheet, header_row, target_columns, formula_columns, min_cl
 
 
 def delete_rows_below_input(sheet, header_row, data_row_count):
+    from openpyxl.utils import get_column_letter
+    from openpyxl.utils.cell import range_boundaries
+
     first_delete_row = header_row + data_row_count + 1
+    last_keep_row = first_delete_row - 1
+
+    for table in sheet.tables.values():
+        min_col, min_row, max_col, max_row = range_boundaries(table.ref)
+        if min_row <= last_keep_row < max_row:
+            table.ref = (
+                f"{get_column_letter(min_col)}{min_row}:"
+                f"{get_column_letter(max_col)}{last_keep_row}"
+            )
+            if table.autoFilter:
+                table.autoFilter.ref = table.ref
+
     if sheet.max_row >= first_delete_row:
         sheet.delete_rows(first_delete_row, sheet.max_row - first_delete_row + 1)
+
+    for row_number in list(sheet.row_dimensions):
+        if row_number > last_keep_row:
+            del sheet.row_dimensions[row_number]
 
 
 def fill_formula_columns(sheet, header_row, data_row_count, formula_columns):
@@ -215,8 +234,9 @@ class GlInputCopyApp(tk.Tk):
         super().__init__()
 
         self.title("GL Input Copy Tool")
-        self.geometry("720x300")
+        self.geometry("780x360")
         self.resizable(False, False)
+        self.configure(bg="#F5F7FA")
 
         self.template_path = tk.StringVar()
         self.export_path = tk.StringVar()
@@ -225,28 +245,92 @@ class GlInputCopyApp(tk.Tk):
         self.progress_value = tk.IntVar(value=0)
 
         self.run_button = None
+        self.style = ttk.Style(self)
+        self._configure_style()
         self._build_ui()
 
+    def _configure_style(self):
+        self.style.theme_use("clam")
+        self.style.configure("App.TFrame", background="#F5F7FA")
+        self.style.configure("Card.TFrame", background="#FFFFFF", relief="flat")
+        self.style.configure(
+            "Title.TLabel",
+            background="#F5F7FA",
+            foreground="#1F2937",
+            font=("Segoe UI", 16, "bold"),
+        )
+        self.style.configure(
+            "Subtitle.TLabel",
+            background="#F5F7FA",
+            foreground="#6B7280",
+            font=("Segoe UI", 9),
+        )
+        self.style.configure(
+            "Field.TLabel",
+            background="#FFFFFF",
+            foreground="#374151",
+            font=("Segoe UI", 9, "bold"),
+        )
+        self.style.configure(
+            "Status.TLabel",
+            background="#FFFFFF",
+            foreground="#4B5563",
+            font=("Segoe UI", 9),
+        )
+        self.style.configure(
+            "Primary.TButton",
+            font=("Segoe UI", 10, "bold"),
+            padding=(18, 10),
+            background="#2563EB",
+            foreground="#FFFFFF",
+        )
+        self.style.map(
+            "Primary.TButton",
+            background=[("active", "#1D4ED8"), ("disabled", "#9CA3AF")],
+            foreground=[("disabled", "#F3F4F6")],
+        )
+        self.style.configure("Browse.TButton", font=("Segoe UI", 9), padding=(10, 6))
+        self.style.configure(
+            "Blue.Horizontal.TProgressbar",
+            troughcolor="#E5E7EB",
+            background="#2563EB",
+            bordercolor="#E5E7EB",
+            lightcolor="#2563EB",
+            darkcolor="#2563EB",
+        )
+
     def _build_ui(self):
-        container = tk.Frame(self, padx=16, pady=16)
+        container = ttk.Frame(self, padding=20, style="App.TFrame")
         container.pack(fill=tk.BOTH, expand=True)
 
-        self._add_file_row(
+        ttk.Label(container, text="GL Input Copy Tool", style="Title.TLabel").grid(
+            row=0, column=0, sticky="w"
+        )
+        ttk.Label(
             container,
+            text="ERP Export 데이터를 Review 템플릿의 2. GL Input 시트로 옮깁니다.",
+            style="Subtitle.TLabel",
+        ).grid(row=1, column=0, sticky="w", pady=(2, 16))
+
+        card = ttk.Frame(container, padding=18, style="Card.TFrame")
+        card.grid(row=2, column=0, sticky="ew")
+
+        self._add_file_row(
+            card,
             row=0,
             label="Review 템플릿 xlsx",
             variable=self.template_path,
             command=self.select_template,
         )
         self._add_file_row(
-            container,
+            card,
             row=1,
             label="ERP Export xlsx",
             variable=self.export_path,
             command=self.select_export,
         )
         self._add_file_row(
-            container,
+            card,
             row=2,
             label="결과 저장 경로",
             variable=self.output_path,
@@ -254,30 +338,38 @@ class GlInputCopyApp(tk.Tk):
         )
 
         self.progress_bar = ttk.Progressbar(
-            container,
+            card,
             variable=self.progress_value,
             maximum=100,
             mode="determinate",
+            style="Blue.Horizontal.TProgressbar",
         )
-        self.progress_bar.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(18, 6))
+        self.progress_bar.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(18, 8))
 
-        tk.Label(container, textvariable=self.status_text, anchor="w").grid(
+        ttk.Label(card, textvariable=self.status_text, anchor="w", style="Status.TLabel").grid(
             row=4, column=0, columnspan=2, sticky="ew"
         )
 
-        self.run_button = tk.Button(container, text="실행", command=self.run, width=16, height=2)
+        self.run_button = ttk.Button(
+            card,
+            text="실행",
+            command=self.run,
+            width=14,
+            style="Primary.TButton",
+        )
         self.run_button.grid(row=4, column=2, sticky="e", pady=(4, 0))
 
-        container.grid_columnconfigure(1, weight=1)
+        container.grid_columnconfigure(0, weight=1)
+        card.grid_columnconfigure(1, weight=1)
 
     def _add_file_row(self, parent, row, label, variable, command):
-        tk.Label(parent, text=label, anchor="w", width=18).grid(
+        ttk.Label(parent, text=label, anchor="w", width=18, style="Field.TLabel").grid(
             row=row, column=0, sticky="w", pady=8
         )
-        tk.Entry(parent, textvariable=variable, width=70).grid(
+        ttk.Entry(parent, textvariable=variable, width=72).grid(
             row=row, column=1, sticky="ew", padx=(8, 8), pady=8
         )
-        tk.Button(parent, text="찾기", command=command, width=10).grid(
+        ttk.Button(parent, text="찾기", command=command, width=10, style="Browse.TButton").grid(
             row=row, column=2, sticky="e", pady=8
         )
 
