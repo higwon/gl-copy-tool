@@ -86,6 +86,7 @@ def delete_rows_below_input(sheet, header_row, data_row_count):
 
     first_delete_row = header_row + data_row_count + 1
     last_keep_row = first_delete_row - 1
+    adjusted_table_count = 0
 
     for table in sheet.tables.values():
         min_col, min_row, max_col, max_row = range_boundaries(table.ref)
@@ -96,13 +97,18 @@ def delete_rows_below_input(sheet, header_row, data_row_count):
             )
             if table.autoFilter:
                 table.autoFilter.ref = table.ref
+            adjusted_table_count += 1
 
+    deleted_row_count = 0
     if sheet.max_row >= first_delete_row:
-        sheet.delete_rows(first_delete_row, sheet.max_row - first_delete_row + 1)
+        deleted_row_count = sheet.max_row - first_delete_row + 1
+        sheet.delete_rows(first_delete_row, deleted_row_count)
 
     for row_number in list(sheet.row_dimensions):
         if row_number > last_keep_row:
             del sheet.row_dimensions[row_number]
+
+    return deleted_row_count, adjusted_table_count
 
 
 def fill_formula_columns(sheet, header_row, data_row_count, formula_columns):
@@ -163,9 +169,9 @@ def copy_export_to_gl_input(template_path, export_path, output_path, progress_ca
     template_wb = load_workbook(template_path)
     export_wb = load_workbook(export_path, data_only=False)
 
-    report_progress(progress_callback, 15, "Review 템플릿 시트를 확인하는 중...")
+    report_progress(progress_callback, 15, "GL Auto 템플릿 시트를 확인하는 중...")
     if TARGET_SHEET_NAME not in template_wb.sheetnames:
-        raise ValueError(f'Review template에 "{TARGET_SHEET_NAME}" 시트가 없습니다.')
+        raise ValueError(f'GL Auto 템플릿에 "{TARGET_SHEET_NAME}" 시트가 없습니다.')
 
     target_ws = template_wb[TARGET_SHEET_NAME]
     source_ws = export_wb.worksheets[0]
@@ -175,7 +181,7 @@ def copy_export_to_gl_input(template_path, export_path, output_path, progress_ca
     source_header_row, source_columns = find_header_row_and_columns(source_ws, MATCH_HEADERS)
     target_header_row, target_columns = find_header_row_and_columns(target_ws, MATCH_HEADERS)
 
-    report_progress(progress_callback, 35, "ERP Export 데이터를 읽는 중...")
+    report_progress(progress_callback, 35, "Import Data를 읽는 중...")
     source_data_rows = [
         row_number
         for row_number in range(source_header_row + 1, source_ws.max_row + 1)
@@ -222,11 +228,21 @@ def copy_export_to_gl_input(template_path, export_path, output_path, progress_ca
     fill_formula_columns(target_ws, target_header_row, len(source_data_rows), formula_columns)
 
     report_progress(progress_callback, 88, "입력 데이터 아래 행을 삭제하는 중...")
-    delete_rows_below_input(target_ws, target_header_row, len(source_data_rows))
+    deleted_row_count, adjusted_table_count = delete_rows_below_input(
+        target_ws,
+        target_header_row,
+        len(source_data_rows),
+    )
 
     report_progress(progress_callback, 95, "결과 파일을 저장하는 중...")
     template_wb.save(output_path)
     report_progress(progress_callback, 100, "완료")
+    return {
+        "copied_rows": len(source_data_rows),
+        "deleted_rows": deleted_row_count,
+        "adjusted_tables": adjusted_table_count,
+        "output_path": output_path,
+    }
 
 
 class GlInputCopyApp(tk.Tk):
@@ -234,7 +250,7 @@ class GlInputCopyApp(tk.Tk):
         super().__init__()
 
         self.title("GL Input Copy Tool")
-        self.geometry("780x360")
+        self.geometry("780x430")
         self.resizable(False, False)
         self.configure(bg="#F5F7FA")
 
@@ -242,9 +258,13 @@ class GlInputCopyApp(tk.Tk):
         self.export_path = tk.StringVar()
         self.output_path = tk.StringVar()
         self.status_text = tk.StringVar(value="대기 중")
+        self.summary_text = tk.StringVar(value="실행 결과가 여기에 표시됩니다.")
         self.progress_value = tk.IntVar(value=0)
+        self.last_output_path = None
 
         self.run_button = None
+        self.open_file_button = None
+        self.open_folder_button = None
         self.style = ttk.Style(self)
         self._configure_style()
         self._build_ui()
@@ -278,6 +298,13 @@ class GlInputCopyApp(tk.Tk):
             font=("Segoe UI", 9),
         )
         self.style.configure(
+            "Summary.TLabel",
+            background="#F8FAFC",
+            foreground="#374151",
+            font=("Segoe UI", 9),
+            padding=(10, 8),
+        )
+        self.style.configure(
             "Primary.TButton",
             font=("Segoe UI", 10, "bold"),
             padding=(18, 10),
@@ -308,7 +335,7 @@ class GlInputCopyApp(tk.Tk):
         )
         ttk.Label(
             container,
-            text="ERP Export 데이터를 Review 템플릿의 2. GL Input 시트로 옮깁니다.",
+            text="Import Data를 GL Auto 템플릿의 2. GL Input 시트로 옮깁니다.",
             style="Subtitle.TLabel",
         ).grid(row=1, column=0, sticky="w", pady=(2, 16))
 
@@ -318,14 +345,14 @@ class GlInputCopyApp(tk.Tk):
         self._add_file_row(
             card,
             row=0,
-            label="Review 템플릿 xlsx",
+            label="GL Auto 템플릿 xlsx",
             variable=self.template_path,
             command=self.select_template,
         )
         self._add_file_row(
             card,
             row=1,
-            label="ERP Export xlsx",
+            label="Import Data xlsx",
             variable=self.export_path,
             command=self.select_export,
         )
@@ -359,8 +386,41 @@ class GlInputCopyApp(tk.Tk):
         )
         self.run_button.grid(row=4, column=2, sticky="e", pady=(4, 0))
 
+        summary_frame = ttk.Frame(card, style="Card.TFrame")
+        summary_frame.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(18, 0))
+
+        ttk.Label(
+            summary_frame,
+            textvariable=self.summary_text,
+            anchor="w",
+            justify="left",
+            style="Summary.TLabel",
+        ).grid(row=0, column=0, sticky="ew")
+
+        button_frame = ttk.Frame(summary_frame, style="Card.TFrame")
+        button_frame.grid(row=0, column=1, sticky="e", padx=(12, 0))
+
+        self.open_folder_button = ttk.Button(
+            button_frame,
+            text="파일 위치 열기",
+            command=self.open_output_folder,
+            state=tk.DISABLED,
+            style="Browse.TButton",
+        )
+        self.open_folder_button.grid(row=0, column=0, padx=(0, 8))
+
+        self.open_file_button = ttk.Button(
+            button_frame,
+            text="파일 열기",
+            command=self.open_output_file,
+            state=tk.DISABLED,
+            style="Browse.TButton",
+        )
+        self.open_file_button.grid(row=0, column=1)
+
         container.grid_columnconfigure(0, weight=1)
         card.grid_columnconfigure(1, weight=1)
+        summary_frame.grid_columnconfigure(0, weight=1)
 
     def _add_file_row(self, parent, row, label, variable, command):
         ttk.Label(parent, text=label, anchor="w", width=18, style="Field.TLabel").grid(
@@ -375,7 +435,7 @@ class GlInputCopyApp(tk.Tk):
 
     def select_template(self):
         path = filedialog.askopenfilename(
-            title="Review 템플릿 xlsx 선택",
+            title="GL Auto 템플릿 xlsx 선택",
             filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")],
         )
         if path:
@@ -384,7 +444,7 @@ class GlInputCopyApp(tk.Tk):
 
     def select_export(self):
         path = filedialog.askopenfilename(
-            title="ERP Export xlsx 선택",
+            title="Import Data xlsx 선택",
             filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")],
         )
         if path:
@@ -414,17 +474,17 @@ class GlInputCopyApp(tk.Tk):
         output_path = self.output_path.get().strip()
 
         if not template_path:
-            raise ValueError("Review 템플릿 xlsx를 선택하세요.")
+            raise ValueError("GL Auto 템플릿 xlsx를 선택하세요.")
         if not export_path:
-            raise ValueError("ERP Export xlsx를 선택하세요.")
+            raise ValueError("Import Data xlsx를 선택하세요.")
         if not output_path:
             raise ValueError("결과 저장 경로를 선택하세요.")
         if not os.path.isfile(template_path):
-            raise ValueError("Review 템플릿 파일을 찾을 수 없습니다.")
+            raise ValueError("GL Auto 템플릿 파일을 찾을 수 없습니다.")
         if not os.path.isfile(export_path):
-            raise ValueError("ERP Export 파일을 찾을 수 없습니다.")
+            raise ValueError("Import Data 파일을 찾을 수 없습니다.")
         if os.path.abspath(template_path) == os.path.abspath(output_path):
-            raise ValueError("결과 파일은 Review 템플릿과 다른 경로로 저장하세요.")
+            raise ValueError("결과 파일은 GL Auto 템플릿과 다른 경로로 저장하세요.")
 
         output_dir = os.path.dirname(output_path)
         if output_dir and not os.path.isdir(output_dir):
@@ -443,16 +503,25 @@ class GlInputCopyApp(tk.Tk):
         state = tk.DISABLED if is_running else tk.NORMAL
         if self.run_button:
             self.run_button.config(state=state)
+        if is_running:
+            self._set_result_buttons_enabled(False)
 
     def run(self):
         try:
             template_path, export_path, output_path = self.validate_inputs()
         except Exception as exc:
+            self.progress_value.set(0)
+            self.status_text.set("실패")
+            self.summary_text.set(f"실패: 실행 전 확인이 필요합니다.\n원인: {exc}")
+            self._set_result_buttons_enabled(False)
             messagebox.showerror("오류", str(exc))
             return
 
         self.progress_value.set(0)
         self.status_text.set("시작하는 중...")
+        self.summary_text.set("실행 중입니다. 잠시만 기다려 주세요.")
+        self.last_output_path = None
+        self._set_result_buttons_enabled(False)
         self.set_running(True)
 
         worker = threading.Thread(
@@ -464,26 +533,61 @@ class GlInputCopyApp(tk.Tk):
 
     def _run_worker(self, template_path, export_path, output_path):
         try:
-            copy_export_to_gl_input(
+            result = copy_export_to_gl_input(
                 template_path,
                 export_path,
                 output_path,
                 progress_callback=self.update_progress,
             )
-            self.after(0, self._show_success, output_path)
+            self.after(0, self._show_success, result)
         except Exception as exc:
             self.after(0, self._show_error, str(exc))
 
-    def _show_success(self, output_path):
+    def _show_success(self, result):
+        output_path = result["output_path"]
         self.set_running(False)
         self.progress_value.set(100)
         self.status_text.set("완료")
+        self.last_output_path = output_path
+        self.summary_text.set(
+            "성공: GL Input 데이터 입력을 완료했습니다.\n"
+            f"입력 행 수: {result['copied_rows']} / "
+            f"삭제된 하단 행 수: {result['deleted_rows']} / "
+            f"조정된 표 범위: {result['adjusted_tables']}\n"
+            f"결과 파일: {output_path}"
+        )
+        self._set_result_buttons_enabled(True)
         messagebox.showinfo("완료", f"결과 파일을 저장했습니다.\n\n{output_path}")
 
     def _show_error(self, message):
         self.set_running(False)
-        self.status_text.set("오류 발생")
+        self.progress_value.set(0)
+        self.status_text.set("실패")
+        self.last_output_path = None
+        self.summary_text.set(f"실패: 작업을 완료하지 못했습니다.\n원인: {message}")
+        self._set_result_buttons_enabled(False)
         messagebox.showerror("오류", message)
+
+    def _set_result_buttons_enabled(self, enabled):
+        state = tk.NORMAL if enabled else tk.DISABLED
+        if self.open_file_button:
+            self.open_file_button.config(state=state)
+        if self.open_folder_button:
+            self.open_folder_button.config(state=state)
+
+    def open_output_file(self):
+        if self.last_output_path and os.path.exists(self.last_output_path):
+            os.startfile(self.last_output_path)
+        else:
+            messagebox.showerror("오류", "열 수 있는 결과 파일이 없습니다.")
+
+    def open_output_folder(self):
+        if self.last_output_path:
+            folder_path = os.path.dirname(self.last_output_path)
+            if os.path.isdir(folder_path):
+                os.startfile(folder_path)
+                return
+        messagebox.showerror("오류", "열 수 있는 결과 파일 위치가 없습니다.")
 
 
 if __name__ == "__main__":
