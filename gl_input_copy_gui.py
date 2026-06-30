@@ -1,5 +1,6 @@
 import copy
 import os
+import sys
 import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -12,8 +13,14 @@ except ImportError:
 
 
 APP_NAME = "GL Input Copy Tool"
-APP_VERSION = "0.2.1"
+APP_VERSION = "0.2.2"
 APP_AUTHOR = "DA_GYEONG"
+APP_ICON = "assets/app.ico"
+HEADER_LOGO = "assets/logo_header.png"
+STATUS_SUCCESS_IMAGE = "assets/status_success.png"
+STATUS_ERROR_IMAGE = "assets/status_error.png"
+DIALOG_SUCCESS_IMAGE = "assets/dialog_success.png"
+DIALOG_ERROR_IMAGE = "assets/dialog_error.png"
 TARGET_SHEET_NAME = "2. GL Input"
 ACCOUNT_CODE_HEADER = "계정코드"
 MATCH_HEADERS = ["날짜", "계정코드", "차변(EUR)", "대변(EUR)", "거래처명", "적요"]
@@ -27,6 +34,11 @@ IMPORT_FORMATS = {
     "Vietnam - Standard": {"transform": "standard_debit_credit"},
 }
 BaseTk = TkinterDnD.Tk if TkinterDnD else tk.Tk
+
+
+def resource_path(relative_path):
+    base_path = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base_path, relative_path)
 
 
 def report_progress(progress_callback, percent, message):
@@ -291,6 +303,13 @@ class GlInputCopyApp(BaseTk):
         self.resizable(False, False)
         self.configure(bg="#F5F7FA")
 
+        self._set_window_icon()
+        self.header_logo_image = self._load_photo_image(HEADER_LOGO)
+        self.status_success_image = self._load_photo_image(STATUS_SUCCESS_IMAGE)
+        self.status_error_image = self._load_photo_image(STATUS_ERROR_IMAGE)
+        self.dialog_success_image = self._load_photo_image(DIALOG_SUCCESS_IMAGE)
+        self.dialog_error_image = self._load_photo_image(DIALOG_ERROR_IMAGE)
+        self.status_image_label = None
         self.import_format = tk.StringVar(value=DEFAULT_IMPORT_FORMAT)
         self.template_path = tk.StringVar()
         self.export_path = tk.StringVar()
@@ -306,6 +325,23 @@ class GlInputCopyApp(BaseTk):
         self.style = ttk.Style(self)
         self._configure_style()
         self._build_ui()
+
+    def _set_window_icon(self):
+        icon_path = resource_path(APP_ICON)
+        if os.path.exists(icon_path):
+            try:
+                self.iconbitmap(icon_path)
+            except tk.TclError:
+                pass
+
+    def _load_photo_image(self, relative_path):
+        path = resource_path(relative_path)
+        if not os.path.exists(path):
+            return None
+        try:
+            return tk.PhotoImage(file=path)
+        except tk.TclError:
+            return None
 
     def _configure_style(self):
         self.style.theme_use("clam")
@@ -380,22 +416,30 @@ class GlInputCopyApp(BaseTk):
         container = ttk.Frame(self, padding=20, style="App.TFrame")
         container.pack(fill=tk.BOTH, expand=True)
 
-        ttk.Label(container, text=APP_NAME, style="Title.TLabel").grid(
-            row=0, column=0, sticky="w"
+        header_frame = ttk.Frame(container, style="App.TFrame")
+        header_frame.grid(row=0, column=0, sticky="w")
+        if self.header_logo_image:
+            ttk.Label(
+                header_frame,
+                image=self.header_logo_image,
+                style="Subtitle.TLabel",
+            ).grid(row=0, column=0, rowspan=2, sticky="w", padx=(0, 12))
+        ttk.Label(header_frame, text=APP_NAME, style="Title.TLabel").grid(
+            row=0, column=1, sticky="w"
         )
+        ttk.Label(
+            header_frame,
+            text="Import Data를 GL Auto 템플릿의 2. GL Input 시트로 옮깁니다.",
+            style="Subtitle.TLabel",
+        ).grid(row=1, column=1, sticky="w", pady=(2, 0))
         ttk.Label(
             container,
             text=f"v{APP_VERSION} | {APP_AUTHOR}",
             style="Meta.TLabel",
         ).grid(row=0, column=1, sticky="ne")
-        ttk.Label(
-            container,
-            text="Import Data를 GL Auto 템플릿의 2. GL Input 시트로 옮깁니다.",
-            style="Subtitle.TLabel",
-        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(2, 16))
 
         card = ttk.Frame(container, padding=18, style="Card.TFrame")
-        card.grid(row=2, column=0, columnspan=2, sticky="ew")
+        card.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(16, 0))
 
         ttk.Label(card, text="Import Data 양식", anchor="w", width=18, style="Field.TLabel").grid(
             row=0, column=0, sticky="w", pady=8
@@ -466,6 +510,18 @@ class GlInputCopyApp(BaseTk):
 
         result_frame = ttk.Frame(summary_frame, style="Card.TFrame")
         result_frame.grid(row=0, column=0, sticky="ew")
+        status_frame = tk.Frame(
+            result_frame,
+            width=74,
+            height=84,
+            bg="#FFFFFF",
+            highlightbackground="#E5E7EB",
+            highlightthickness=1,
+        )
+        status_frame.grid(row=0, column=0, sticky="nsw", padx=(0, 10))
+        status_frame.grid_propagate(False)
+        self.status_image_label = tk.Label(status_frame, bg="#FFFFFF")
+        self.status_image_label.place(relx=0.5, rely=0.5, anchor="center")
         self.summary_view = tk.Text(
             result_frame,
             height=5,
@@ -477,15 +533,16 @@ class GlInputCopyApp(BaseTk):
             padx=10,
             pady=8,
         )
-        self.summary_view.grid(row=0, column=0, sticky="ew")
+        self.summary_view.grid(row=0, column=1, sticky="ew")
         summary_scrollbar = ttk.Scrollbar(
             result_frame,
             orient="vertical",
             command=self.summary_view.yview,
         )
-        summary_scrollbar.grid(row=0, column=1, sticky="ns")
+        summary_scrollbar.grid(row=0, column=2, sticky="ns")
         self.summary_view.configure(yscrollcommand=summary_scrollbar.set, state=tk.DISABLED)
-        result_frame.grid_columnconfigure(0, weight=1)
+        result_frame.grid_columnconfigure(1, weight=1)
+        self._set_result_status_image(None)
         self._set_summary_text("실행 결과가 여기에 표시됩니다.")
 
         button_frame = ttk.Frame(summary_frame, style="Card.TFrame")
@@ -565,6 +622,66 @@ class GlInputCopyApp(BaseTk):
         self.summary_view.delete("1.0", tk.END)
         self.summary_view.insert("1.0", text)
         self.summary_view.configure(state=tk.DISABLED)
+
+    def _set_result_status_image(self, image):
+        if not self.status_image_label:
+            return
+        if image:
+            self.status_image_label.configure(image=image, text="")
+        else:
+            self.status_image_label.configure(image="", text="Ready", fg="#6B7280")
+
+    def _show_image_dialog(self, title, message, image):
+        dialog = tk.Toplevel(self)
+        dialog.title(title)
+        dialog.configure(bg="#FFFFFF")
+        dialog.resizable(False, False)
+        dialog.transient(self)
+        dialog.grab_set()
+
+        body = ttk.Frame(dialog, padding=20, style="Card.TFrame")
+        body.grid(row=0, column=0, sticky="nsew")
+        if image:
+            ttk.Label(body, image=image, style="Field.TLabel").grid(
+                row=0, column=0, sticky="n", padx=(0, 18)
+            )
+
+        message_frame = ttk.Frame(body, style="Card.TFrame")
+        message_frame.grid(row=0, column=1, sticky="nsew")
+        ttk.Label(
+            message_frame,
+            text=title,
+            style="Field.TLabel",
+        ).grid(row=0, column=0, sticky="w")
+        message_view = tk.Text(
+            message_frame,
+            width=58,
+            height=7,
+            wrap="word",
+            relief="flat",
+            bg="#FFFFFF",
+            fg="#374151",
+            font=("Segoe UI", 9),
+        )
+        message_view.grid(row=1, column=0, sticky="ew", pady=(8, 12))
+        message_view.insert("1.0", message)
+        message_view.configure(state=tk.DISABLED)
+
+        ok_button = ttk.Button(
+            message_frame,
+            text="확인",
+            command=dialog.destroy,
+            width=12,
+            style="Primary.TButton",
+        )
+        ok_button.grid(row=2, column=0, sticky="e")
+
+        dialog.update_idletasks()
+        x = self.winfo_rootx() + (self.winfo_width() - dialog.winfo_width()) // 2
+        y = self.winfo_rooty() + (self.winfo_height() - dialog.winfo_height()) // 2
+        dialog.geometry(f"+{max(x, 0)}+{max(y, 0)}")
+        ok_button.focus_set()
+        self.wait_window(dialog)
 
     def select_template(self):
         path = filedialog.askopenfilename(
@@ -649,13 +766,15 @@ class GlInputCopyApp(BaseTk):
             self.progress_value.set(0)
             self.status_text.set("실패")
             self._set_summary_text(f"실패: 실행 전 확인이 필요합니다.\n원인: {exc}")
+            self._set_result_status_image(self.status_error_image)
             self._set_result_buttons_enabled(False)
-            messagebox.showerror("오류", str(exc))
+            self._show_image_dialog("오류", str(exc), self.dialog_error_image)
             return
 
         self.progress_value.set(0)
         self.status_text.set("시작하는 중...")
         self._set_summary_text("실행 중입니다. 잠시만 기다려 주세요.")
+        self._set_result_status_image(None)
         self.last_output_path = None
         self._set_result_buttons_enabled(False)
         self.set_running(True)
@@ -686,6 +805,7 @@ class GlInputCopyApp(BaseTk):
         self.progress_value.set(100)
         self.status_text.set("완료")
         self.last_output_path = output_path
+        self._set_result_status_image(self.status_success_image)
         self._set_summary_text(
             "성공: GL Input 데이터 입력을 완료했습니다.\n"
             f"Import Data 양식: {result['import_format']}\n"
@@ -695,16 +815,21 @@ class GlInputCopyApp(BaseTk):
             f"결과 파일: {output_path}"
         )
         self._set_result_buttons_enabled(True)
-        messagebox.showinfo("완료", f"결과 파일을 저장했습니다.\n\n{output_path}")
+        self._show_image_dialog(
+            "완료",
+            f"결과 파일을 저장했습니다.\n\n{output_path}",
+            self.dialog_success_image,
+        )
 
     def _show_error(self, message):
         self.set_running(False)
         self.progress_value.set(0)
         self.status_text.set("실패")
         self.last_output_path = None
+        self._set_result_status_image(self.status_error_image)
         self._set_summary_text(f"실패: 작업을 완료하지 못했습니다.\n원인: {message}")
         self._set_result_buttons_enabled(False)
-        messagebox.showerror("오류", message)
+        self._show_image_dialog("오류", message, self.dialog_error_image)
 
     def _set_result_buttons_enabled(self, enabled):
         state = tk.NORMAL if enabled else tk.DISABLED

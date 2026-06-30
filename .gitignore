@@ -4,6 +4,7 @@ build/
 dist/
 GLInputCopyTool-*.zip
 GLInputCopyTool-*.zip.sha256
+mockups/
 node_modules/
 *.inspect.ndjson
 ~$*.xlsx
