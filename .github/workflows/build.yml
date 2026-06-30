@@ -52,4 +52,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           name: GL Input Copy Tool ${{ github.ref_name }}
+          body_path: RELEASE_NOTES.md
           files: dist/GLInputCopyTool.exe
