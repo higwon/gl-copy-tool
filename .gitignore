@@ -1,6 +1,7 @@
 __pycache__/
 *.py[cod]
 build/
+dist/*.exe
 node_modules/
 *.inspect.ndjson
 ~$*.xlsx

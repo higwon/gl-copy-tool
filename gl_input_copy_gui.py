@@ -4,10 +4,29 @@ import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
+try:
+    from tkinterdnd2 import DND_FILES, TkinterDnD
+except ImportError:
+    DND_FILES = None
+    TkinterDnD = None
 
+
+APP_NAME = "GL Input Copy Tool"
+APP_VERSION = "0.2.0"
+APP_AUTHOR = "DA_GYEONG"
 TARGET_SHEET_NAME = "2. GL Input"
+ACCOUNT_CODE_HEADER = "계정코드"
 MATCH_HEADERS = ["날짜", "계정코드", "차변(EUR)", "대변(EUR)", "거래처명", "적요"]
 HEADER_SCAN_ROWS = 30
+DEFAULT_IMPORT_FORMAT = "Korea - Standard"
+IMPORT_FORMATS = {
+    "Korea - Standard": {"transform": "standard_debit_credit"},
+    "Germany - SAP Export": {"transform": "standard_debit_credit"},
+    "Japan - Standard": {"transform": "standard_debit_credit"},
+    "China - Standard": {"transform": "standard_debit_credit"},
+    "Vietnam - Standard": {"transform": "standard_debit_credit"},
+}
+BaseTk = TkinterDnD.Tk if TkinterDnD else tk.Tk
 
 
 def report_progress(progress_callback, percent, message):
@@ -156,7 +175,21 @@ def copy_cell_value_only(source_cell, target_cell):
     target_cell.value = source_cell.value
 
 
-def copy_export_to_gl_input(template_path, export_path, output_path, progress_callback=None):
+def copy_account_code_as_text(source_cell, target_cell):
+    if source_cell.value is None:
+        target_cell.value = None
+    else:
+        target_cell.value = str(source_cell.value)
+    target_cell.number_format = "@"
+
+
+def copy_export_to_gl_input(
+    template_path,
+    export_path,
+    output_path,
+    import_format=DEFAULT_IMPORT_FORMAT,
+    progress_callback=None,
+):
     try:
         from openpyxl import load_workbook
     except ModuleNotFoundError as exc:
@@ -215,7 +248,10 @@ def copy_export_to_gl_input(template_path, export_path, output_path, progress_ca
             if is_formula_cell(target_cell):
                 continue
 
-            copy_cell_value_only(source_cell, target_cell)
+            if header == ACCOUNT_CODE_HEADER:
+                copy_account_code_as_text(source_cell, target_cell)
+            else:
+                copy_cell_value_only(source_cell, target_cell)
 
         percent = 45 + int((row_offset / total_rows) * 35)
         report_progress(
@@ -241,30 +277,32 @@ def copy_export_to_gl_input(template_path, export_path, output_path, progress_ca
         "copied_rows": len(source_data_rows),
         "deleted_rows": deleted_row_count,
         "adjusted_tables": adjusted_table_count,
+        "import_format": import_format,
         "output_path": output_path,
     }
 
 
-class GlInputCopyApp(tk.Tk):
+class GlInputCopyApp(BaseTk):
     def __init__(self):
         super().__init__()
 
-        self.title("GL Input Copy Tool")
-        self.geometry("780x430")
+        self.title(APP_NAME)
+        self.geometry("860x560")
         self.resizable(False, False)
         self.configure(bg="#F5F7FA")
 
+        self.import_format = tk.StringVar(value=DEFAULT_IMPORT_FORMAT)
         self.template_path = tk.StringVar()
         self.export_path = tk.StringVar()
         self.output_path = tk.StringVar()
         self.status_text = tk.StringVar(value="대기 중")
-        self.summary_text = tk.StringVar(value="실행 결과가 여기에 표시됩니다.")
         self.progress_value = tk.IntVar(value=0)
         self.last_output_path = None
 
         self.run_button = None
         self.open_file_button = None
         self.open_folder_button = None
+        self.summary_view = None
         self.style = ttk.Style(self)
         self._configure_style()
         self._build_ui()
@@ -286,10 +324,22 @@ class GlInputCopyApp(tk.Tk):
             font=("Segoe UI", 9),
         )
         self.style.configure(
+            "Meta.TLabel",
+            background="#F5F7FA",
+            foreground="#6B7280",
+            font=("Segoe UI", 9),
+        )
+        self.style.configure(
             "Field.TLabel",
             background="#FFFFFF",
             foreground="#374151",
             font=("Segoe UI", 9, "bold"),
+        )
+        self.style.configure(
+            "Hint.TLabel",
+            background="#FFFFFF",
+            foreground="#6B7280",
+            font=("Segoe UI", 8),
         )
         self.style.configure(
             "Status.TLabel",
@@ -330,38 +380,63 @@ class GlInputCopyApp(tk.Tk):
         container = ttk.Frame(self, padding=20, style="App.TFrame")
         container.pack(fill=tk.BOTH, expand=True)
 
-        ttk.Label(container, text="GL Input Copy Tool", style="Title.TLabel").grid(
+        ttk.Label(container, text=APP_NAME, style="Title.TLabel").grid(
             row=0, column=0, sticky="w"
         )
         ttk.Label(
             container,
+            text=f"v{APP_VERSION} | {APP_AUTHOR}",
+            style="Meta.TLabel",
+        ).grid(row=0, column=1, sticky="ne")
+        ttk.Label(
+            container,
             text="Import Data를 GL Auto 템플릿의 2. GL Input 시트로 옮깁니다.",
             style="Subtitle.TLabel",
-        ).grid(row=1, column=0, sticky="w", pady=(2, 16))
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(2, 16))
 
         card = ttk.Frame(container, padding=18, style="Card.TFrame")
-        card.grid(row=2, column=0, sticky="ew")
+        card.grid(row=2, column=0, columnspan=2, sticky="ew")
 
-        self._add_file_row(
-            card,
-            row=0,
-            label="GL Auto 템플릿 xlsx",
-            variable=self.template_path,
-            command=self.select_template,
+        ttk.Label(card, text="Import Data 양식", anchor="w", width=18, style="Field.TLabel").grid(
+            row=0, column=0, sticky="w", pady=8
         )
+        format_combo = ttk.Combobox(
+            card,
+            textvariable=self.import_format,
+            values=list(IMPORT_FORMATS),
+            state="readonly",
+            width=40,
+        )
+        format_combo.grid(row=0, column=1, sticky="w", padx=(8, 8), pady=8)
+        ttk.Label(
+            card,
+            text="현재는 모든 양식이 기본 복사 방식으로 동작합니다.",
+            style="Hint.TLabel",
+        ).grid(row=0, column=2, sticky="e", pady=8)
+
         self._add_file_row(
             card,
             row=1,
-            label="Import Data xlsx",
-            variable=self.export_path,
-            command=self.select_export,
+            label="GL Auto 템플릿 xlsx",
+            variable=self.template_path,
+            command=self.select_template,
+            drop_role="template",
         )
         self._add_file_row(
             card,
             row=2,
+            label="Import Data xlsx",
+            variable=self.export_path,
+            command=self.select_export,
+            drop_role="export",
+        )
+        self._add_file_row(
+            card,
+            row=3,
             label="결과 저장 경로",
             variable=self.output_path,
             command=self.select_output,
+            drop_role="output",
         )
 
         self.progress_bar = ttk.Progressbar(
@@ -371,10 +446,10 @@ class GlInputCopyApp(tk.Tk):
             mode="determinate",
             style="Blue.Horizontal.TProgressbar",
         )
-        self.progress_bar.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(18, 8))
+        self.progress_bar.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(18, 8))
 
         ttk.Label(card, textvariable=self.status_text, anchor="w", style="Status.TLabel").grid(
-            row=4, column=0, columnspan=2, sticky="ew"
+            row=5, column=0, columnspan=2, sticky="ew"
         )
 
         self.run_button = ttk.Button(
@@ -384,18 +459,34 @@ class GlInputCopyApp(tk.Tk):
             width=14,
             style="Primary.TButton",
         )
-        self.run_button.grid(row=4, column=2, sticky="e", pady=(4, 0))
+        self.run_button.grid(row=5, column=2, sticky="e", pady=(4, 0))
 
         summary_frame = ttk.Frame(card, style="Card.TFrame")
-        summary_frame.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(18, 0))
+        summary_frame.grid(row=6, column=0, columnspan=3, sticky="ew", pady=(18, 0))
 
-        ttk.Label(
-            summary_frame,
-            textvariable=self.summary_text,
-            anchor="w",
-            justify="left",
-            style="Summary.TLabel",
-        ).grid(row=0, column=0, sticky="ew")
+        result_frame = ttk.Frame(summary_frame, style="Card.TFrame")
+        result_frame.grid(row=0, column=0, sticky="ew")
+        self.summary_view = tk.Text(
+            result_frame,
+            height=5,
+            wrap="word",
+            relief="flat",
+            bg="#F8FAFC",
+            fg="#374151",
+            font=("Segoe UI", 9),
+            padx=10,
+            pady=8,
+        )
+        self.summary_view.grid(row=0, column=0, sticky="ew")
+        summary_scrollbar = ttk.Scrollbar(
+            result_frame,
+            orient="vertical",
+            command=self.summary_view.yview,
+        )
+        summary_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.summary_view.configure(yscrollcommand=summary_scrollbar.set, state=tk.DISABLED)
+        result_frame.grid_columnconfigure(0, weight=1)
+        self._set_summary_text("실행 결과가 여기에 표시됩니다.")
 
         button_frame = ttk.Frame(summary_frame, style="Card.TFrame")
         button_frame.grid(row=0, column=1, sticky="e", padx=(12, 0))
@@ -419,19 +510,61 @@ class GlInputCopyApp(tk.Tk):
         self.open_file_button.grid(row=0, column=1)
 
         container.grid_columnconfigure(0, weight=1)
+        container.grid_columnconfigure(1, weight=0)
         card.grid_columnconfigure(1, weight=1)
         summary_frame.grid_columnconfigure(0, weight=1)
 
-    def _add_file_row(self, parent, row, label, variable, command):
+    def _add_file_row(self, parent, row, label, variable, command, drop_role):
         ttk.Label(parent, text=label, anchor="w", width=18, style="Field.TLabel").grid(
             row=row, column=0, sticky="w", pady=8
         )
-        ttk.Entry(parent, textvariable=variable, width=72).grid(
+        entry = ttk.Entry(parent, textvariable=variable, width=72)
+        entry.grid(
             row=row, column=1, sticky="ew", padx=(8, 8), pady=8
         )
+        self._register_drop_target(entry, variable, drop_role)
         ttk.Button(parent, text="찾기", command=command, width=10, style="Browse.TButton").grid(
             row=row, column=2, sticky="e", pady=8
         )
+
+    def _register_drop_target(self, widget, variable, drop_role):
+        if not DND_FILES:
+            return
+
+        widget.drop_target_register(DND_FILES)
+        widget.dnd_bind(
+            "<<Drop>>",
+            lambda event: self._handle_file_drop(event, variable, drop_role),
+        )
+
+    def _handle_file_drop(self, event, variable, drop_role):
+        paths = [path for path in self.tk.splitlist(event.data) if path]
+        if not paths:
+            return
+
+        path = paths[0]
+        if drop_role == "output" and os.path.isdir(path):
+            base_name = "GL_Input_Result"
+            if self.template_path.get().strip():
+                base_name = os.path.splitext(os.path.basename(self.template_path.get().strip()))[0]
+            variable.set(os.path.join(path, f"{base_name}_result.xlsx"))
+            return
+
+        if not path.lower().endswith(".xlsx"):
+            messagebox.showerror("오류", "xlsx 파일만 드래그앤드랍할 수 있습니다.")
+            return
+
+        variable.set(path)
+        if drop_role in ("template", "export"):
+            self._suggest_output_path()
+
+    def _set_summary_text(self, text):
+        if not self.summary_view:
+            return
+        self.summary_view.configure(state=tk.NORMAL)
+        self.summary_view.delete("1.0", tk.END)
+        self.summary_view.insert("1.0", text)
+        self.summary_view.configure(state=tk.DISABLED)
 
     def select_template(self):
         path = filedialog.askopenfilename(
@@ -469,10 +602,13 @@ class GlInputCopyApp(tk.Tk):
         self.output_path.set(os.path.join(base_dir, f"{base_name}_result.xlsx"))
 
     def validate_inputs(self):
+        import_format = self.import_format.get().strip()
         template_path = self.template_path.get().strip()
         export_path = self.export_path.get().strip()
         output_path = self.output_path.get().strip()
 
+        if import_format not in IMPORT_FORMATS:
+            raise ValueError("Import Data 양식을 선택하세요.")
         if not template_path:
             raise ValueError("GL Auto 템플릿 xlsx를 선택하세요.")
         if not export_path:
@@ -490,7 +626,7 @@ class GlInputCopyApp(tk.Tk):
         if output_dir and not os.path.isdir(output_dir):
             raise ValueError("결과 저장 폴더를 찾을 수 없습니다.")
 
-        return template_path, export_path, output_path
+        return import_format, template_path, export_path, output_path
 
     def update_progress(self, percent, message):
         self.after(0, self._set_progress, percent, message)
@@ -508,35 +644,36 @@ class GlInputCopyApp(tk.Tk):
 
     def run(self):
         try:
-            template_path, export_path, output_path = self.validate_inputs()
+            import_format, template_path, export_path, output_path = self.validate_inputs()
         except Exception as exc:
             self.progress_value.set(0)
             self.status_text.set("실패")
-            self.summary_text.set(f"실패: 실행 전 확인이 필요합니다.\n원인: {exc}")
+            self._set_summary_text(f"실패: 실행 전 확인이 필요합니다.\n원인: {exc}")
             self._set_result_buttons_enabled(False)
             messagebox.showerror("오류", str(exc))
             return
 
         self.progress_value.set(0)
         self.status_text.set("시작하는 중...")
-        self.summary_text.set("실행 중입니다. 잠시만 기다려 주세요.")
+        self._set_summary_text("실행 중입니다. 잠시만 기다려 주세요.")
         self.last_output_path = None
         self._set_result_buttons_enabled(False)
         self.set_running(True)
 
         worker = threading.Thread(
             target=self._run_worker,
-            args=(template_path, export_path, output_path),
+            args=(import_format, template_path, export_path, output_path),
             daemon=True,
         )
         worker.start()
 
-    def _run_worker(self, template_path, export_path, output_path):
+    def _run_worker(self, import_format, template_path, export_path, output_path):
         try:
             result = copy_export_to_gl_input(
                 template_path,
                 export_path,
                 output_path,
+                import_format=import_format,
                 progress_callback=self.update_progress,
             )
             self.after(0, self._show_success, result)
@@ -549,8 +686,9 @@ class GlInputCopyApp(tk.Tk):
         self.progress_value.set(100)
         self.status_text.set("완료")
         self.last_output_path = output_path
-        self.summary_text.set(
+        self._set_summary_text(
             "성공: GL Input 데이터 입력을 완료했습니다.\n"
+            f"Import Data 양식: {result['import_format']}\n"
             f"입력 행 수: {result['copied_rows']} / "
             f"삭제된 하단 행 수: {result['deleted_rows']} / "
             f"조정된 표 범위: {result['adjusted_tables']}\n"
@@ -564,7 +702,7 @@ class GlInputCopyApp(tk.Tk):
         self.progress_value.set(0)
         self.status_text.set("실패")
         self.last_output_path = None
-        self.summary_text.set(f"실패: 작업을 완료하지 못했습니다.\n원인: {message}")
+        self._set_summary_text(f"실패: 작업을 완료하지 못했습니다.\n원인: {message}")
         self._set_result_buttons_enabled(False)
         messagebox.showerror("오류", message)
 
