@@ -12,7 +12,7 @@ except ImportError:
 
 
 APP_NAME = "GL Input Copy Tool"
-APP_VERSION = "0.2.0"
+APP_VERSION = "0.2.1"
 APP_AUTHOR = "DA_GYEONG"
 TARGET_SHEET_NAME = "2. GL Input"
 ACCOUNT_CODE_HEADER = "계정코드"

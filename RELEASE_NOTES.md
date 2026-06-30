@@ -1,5 +1,34 @@
 # Release Notes
 
+## v0.2.1
+
+단일 exe 배포에서 폴더형 zip 배포로 전환한 패치 릴리즈입니다.
+
+### 변경
+
+- PyInstaller 빌드 방식을 단일 파일 exe에서 폴더형 `onedir` 빌드로 변경했습니다.
+- GitHub Actions가 `GLInputCopyTool-v0.2.1.zip`을 생성하도록 변경했습니다.
+- Release에는 zip 파일과 SHA256 파일을 함께 첨부하도록 변경했습니다.
+- 앱 버전을 `v0.2.1`로 올렸습니다.
+- README를 zip 배포 방식 기준으로 갱신했습니다.
+
+### 이유
+
+- 서명되지 않은 PyInstaller 단일 exe가 Windows Defender 또는 브라우저에서 바이러스로 탐지될 수 있어, 오탐 가능성을 줄이기 위해 폴더형 zip 배포로 변경했습니다.
+- 코드 서명은 아직 적용하지 않습니다.
+
+### 사용 방법
+
+1. `GLInputCopyTool-v0.2.1.zip`을 다운로드합니다.
+2. zip 압축을 풉니다.
+3. 압축을 푼 폴더 안의 `GLInputCopyTool.exe`를 실행합니다.
+
+### 검증
+
+- Python 문법 체크를 통과했습니다.
+- PyInstaller 폴더형 로컬 빌드를 확인했습니다.
+- 로컬 zip 패키지 생성을 확인했습니다.
+
 ## v0.2.0
 
 첫 배포용 릴리즈입니다.

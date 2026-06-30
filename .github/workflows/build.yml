@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   windows-build:
-    name: Windows exe build
+    name: Windows zip build
     runs-on: windows-latest
 
     steps:
@@ -36,14 +36,23 @@ jobs:
       - name: Check Python syntax
         run: python -m py_compile gl_input_copy_gui.py
 
-      - name: Build executable
+      - name: Build app folder
         run: python -m PyInstaller GLInputCopyTool.spec --noconfirm
 
-      - name: Upload exe artifact
+      - name: Package app folder
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist\GLInputCopyTool\* -DestinationPath GLInputCopyTool-${{ github.ref_name }}.zip -Force
+          $hash = Get-FileHash GLInputCopyTool-${{ github.ref_name }}.zip -Algorithm SHA256
+          "$($hash.Hash)  GLInputCopyTool-${{ github.ref_name }}.zip" | Set-Content -Encoding ASCII GLInputCopyTool-${{ github.ref_name }}.zip.sha256
+
+      - name: Upload zip artifact
         uses: actions/upload-artifact@v4
         with:
           name: GLInputCopyTool-${{ github.ref_name }}
-          path: dist/GLInputCopyTool.exe
+          path: |
+            GLInputCopyTool-${{ github.ref_name }}.zip
+            GLInputCopyTool-${{ github.ref_name }}.zip.sha256
           if-no-files-found: error
           retention-days: 14
 
@@ -53,4 +62,6 @@ jobs:
         with:
           name: GL Input Copy Tool ${{ github.ref_name }}
           body_path: RELEASE_NOTES.md
-          files: dist/GLInputCopyTool.exe
+          files: |
+            GLInputCopyTool-${{ github.ref_name }}.zip
+            GLInputCopyTool-${{ github.ref_name }}.zip.sha256

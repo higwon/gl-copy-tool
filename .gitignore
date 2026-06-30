@@ -1,7 +1,9 @@
 __pycache__/
 *.py[cod]
 build/
-dist/*.exe
+dist/
+GLInputCopyTool-*.zip
+GLInputCopyTool-*.zip.sha256
 node_modules/
 *.inspect.ndjson
 ~$*.xlsx

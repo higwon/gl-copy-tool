@@ -2,15 +2,29 @@
 
 GL Auto 템플릿 xlsx와 Import Data xlsx를 선택하면, Import Data의 첫 번째 시트 데이터를 GL Auto 템플릿의 `2. GL Input` 시트로 복사해 결과 xlsx를 저장하는 Windows GUI 도구입니다.
 
-현재 버전: `v0.2.0`
+현재 버전: `v0.2.1`
 
-## 실행
+## 다운로드
 
-로컬에서 빌드된 exe 실행:
+최신 버전은 GitHub Releases에서 받습니다.
 
-```powershell
-.\dist\GLInputCopyTool.exe
-```
+[최신 릴리즈 다운로드](https://github.com/higwon/gl-copy-tool/releases/latest)
+
+`v0.2.1`부터는 백신 오탐 가능성을 줄이기 위해 단일 exe 대신 폴더형 zip으로 배포합니다.
+
+사용 방법:
+
+1. Release에서 `GLInputCopyTool-v0.2.1.zip`을 다운로드합니다.
+2. zip 압축을 풉니다.
+3. 압축을 푼 폴더 안의 `GLInputCopyTool.exe`를 실행합니다.
+
+참고:
+
+- 코드 서명은 아직 적용하지 않았습니다.
+- Windows 또는 브라우저가 경고를 표시할 수 있습니다.
+- `GLInputCopyTool-v0.2.1.zip.sha256` 파일로 다운로드 파일의 SHA256 해시를 확인할 수 있습니다.
+
+## 로컬 실행
 
 Python으로 실행:
 
@@ -19,13 +33,21 @@ python -m pip install -r requirements.txt
 python .\gl_input_copy_gui.py
 ```
 
-exe 빌드:
+로컬 폴더형 빌드:
 
 ```powershell
 python -m pip install -r requirements.txt
 python -m pip install pyinstaller
 python -m PyInstaller GLInputCopyTool.spec --noconfirm
 ```
+
+빌드 후 실행:
+
+```powershell
+.\dist\GLInputCopyTool\GLInputCopyTool.exe
+```
+
+로컬 테스트용 빌드는 계속 만들어도 됩니다. 배포용 파일은 Git에 직접 커밋하지 않고 GitHub Actions artifact 또는 Release asset으로 관리합니다.
 
 ## 주요 기능
 
@@ -109,25 +131,25 @@ git pull origin main
 주의:
 
 - `samples/ERP_Export_Sample.xlsx`처럼 테스트 중 임시로 바뀐 파일은 커밋 전에 포함 여부를 확인합니다.
-- 로컬 테스트용 exe는 계속 빌드해도 됩니다.
-- 배포용 exe는 Git에 직접 커밋하지 않고 GitHub Actions artifact 또는 Release asset으로 관리합니다.
+- 로컬 테스트용 빌드 산출물은 Git에 직접 커밋하지 않습니다.
+- 배포용 zip은 GitHub Actions artifact 또는 Release asset으로 관리합니다.
 
 ## GitHub Actions와 릴리즈
 
 일반 push 또는 PR:
 
 - Python 문법 체크
-- PyInstaller exe 빌드 확인
-- `GLInputCopyTool.exe`를 Actions artifact로 업로드
+- PyInstaller 폴더형 빌드 확인
+- `GLInputCopyTool-<ref>.zip`과 `.sha256`을 Actions artifact로 업로드
 
 버전 태그 push:
 
 ```powershell
-git tag v0.2.0
-git push origin v0.2.0
+git tag v0.2.1
+git push origin v0.2.1
 ```
 
-태그가 `v*` 형식이면 GitHub Actions가 Release를 만들고 `dist/GLInputCopyTool.exe`를 Release asset으로 첨부합니다.
+태그가 `v*` 형식이면 GitHub Actions가 Release를 만들고 zip 파일과 SHA256 파일을 Release asset으로 첨부합니다.
 
 ## 릴리즈 노트
 
