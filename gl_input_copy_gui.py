@@ -1,11 +1,18 @@
+import copy
 import os
+import threading
 import tkinter as tk
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, ttk
 
 
 TARGET_SHEET_NAME = "2. GL Input"
 MATCH_HEADERS = ["날짜", "계정코드", "차변(EUR)", "대변(EUR)", "거래처명", "적요"]
 HEADER_SCAN_ROWS = 30
+
+
+def report_progress(progress_callback, percent, message):
+    if progress_callback:
+        progress_callback(percent, message)
 
 
 def is_formula_cell(cell):
@@ -73,11 +80,58 @@ def clear_target_data(sheet, header_row, target_columns, formula_columns, min_cl
                 cell.value = None
 
 
+def delete_rows_below_input(sheet, header_row, data_row_count):
+    first_delete_row = header_row + data_row_count + 1
+    if sheet.max_row >= first_delete_row:
+        sheet.delete_rows(first_delete_row, sheet.max_row - first_delete_row + 1)
+
+
+def fill_formula_columns(sheet, header_row, data_row_count, formula_columns):
+    if data_row_count <= 0:
+        return
+
+    from openpyxl.formula.translate import Translator
+
+    first_data_row = header_row + 1
+    last_data_row = header_row + data_row_count
+
+    for column in sorted(formula_columns):
+        template_cell = None
+        for row_number in range(first_data_row, sheet.max_row + 1):
+            candidate = sheet.cell(row=row_number, column=column)
+            if is_read_only_merged_cell(candidate):
+                continue
+            if is_formula_cell(candidate):
+                template_cell = candidate
+                break
+
+        if not template_cell:
+            continue
+
+        for row_number in range(first_data_row, last_data_row + 1):
+            target_cell = sheet.cell(row=row_number, column=column)
+            if is_read_only_merged_cell(target_cell):
+                continue
+
+            try:
+                target_cell.value = Translator(
+                    template_cell.value,
+                    origin=template_cell.coordinate,
+                ).translate_formula(target_cell.coordinate)
+            except Exception:
+                target_cell.value = template_cell.value
+
+            if template_cell.has_style:
+                target_cell._style = copy.copy(template_cell._style)
+            if template_cell.number_format:
+                target_cell.number_format = template_cell.number_format
+
+
 def copy_cell_value_only(source_cell, target_cell):
     target_cell.value = source_cell.value
 
 
-def copy_export_to_gl_input(template_path, export_path, output_path):
+def copy_export_to_gl_input(template_path, export_path, output_path, progress_callback=None):
     try:
         from openpyxl import load_workbook
     except ModuleNotFoundError as exc:
@@ -86,24 +140,30 @@ def copy_export_to_gl_input(template_path, export_path, output_path):
             "'py -m pip install -r requirements.txt'를 실행한 뒤 다시 시도하세요."
         ) from exc
 
+    report_progress(progress_callback, 5, "파일을 여는 중...")
     template_wb = load_workbook(template_path)
     export_wb = load_workbook(export_path, data_only=False)
 
+    report_progress(progress_callback, 15, "Review 템플릿 시트를 확인하는 중...")
     if TARGET_SHEET_NAME not in template_wb.sheetnames:
         raise ValueError(f'Review template에 "{TARGET_SHEET_NAME}" 시트가 없습니다.')
 
     target_ws = template_wb[TARGET_SHEET_NAME]
     source_ws = export_wb.worksheets[0]
 
+    report_progress(progress_callback, 25, "헤더를 찾는 중...")
     formula_columns = find_formula_columns(target_ws)
     source_header_row, source_columns = find_header_row_and_columns(source_ws, MATCH_HEADERS)
     target_header_row, target_columns = find_header_row_and_columns(target_ws, MATCH_HEADERS)
+
+    report_progress(progress_callback, 35, "ERP Export 데이터를 읽는 중...")
     source_data_rows = [
         row_number
         for row_number in range(source_header_row + 1, source_ws.max_row + 1)
         if row_has_data(source_ws, row_number, source_columns.values())
     ]
 
+    report_progress(progress_callback, 45, "기존 GL Input 데이터를 삭제하는 중...")
     clear_target_data(
         target_ws,
         target_header_row,
@@ -112,6 +172,7 @@ def copy_export_to_gl_input(template_path, export_path, output_path):
         target_header_row + len(source_data_rows),
     )
 
+    total_rows = max(len(source_data_rows), 1)
     for row_offset, source_row_number in enumerate(source_data_rows, start=1):
         target_row_number = target_header_row + row_offset
         for header in MATCH_HEADERS:
@@ -131,7 +192,22 @@ def copy_export_to_gl_input(template_path, export_path, output_path):
 
             copy_cell_value_only(source_cell, target_cell)
 
+        percent = 45 + int((row_offset / total_rows) * 35)
+        report_progress(
+            progress_callback,
+            percent,
+            f"GL Input에 데이터 입력 중... ({row_offset}/{len(source_data_rows)})",
+        )
+
+    report_progress(progress_callback, 82, "수식 컬럼을 정리하는 중...")
+    fill_formula_columns(target_ws, target_header_row, len(source_data_rows), formula_columns)
+
+    report_progress(progress_callback, 88, "입력 데이터 아래 행을 삭제하는 중...")
+    delete_rows_below_input(target_ws, target_header_row, len(source_data_rows))
+
+    report_progress(progress_callback, 95, "결과 파일을 저장하는 중...")
     template_wb.save(output_path)
+    report_progress(progress_callback, 100, "완료")
 
 
 class GlInputCopyApp(tk.Tk):
@@ -139,13 +215,16 @@ class GlInputCopyApp(tk.Tk):
         super().__init__()
 
         self.title("GL Input Copy Tool")
-        self.geometry("720x250")
+        self.geometry("720x300")
         self.resizable(False, False)
 
         self.template_path = tk.StringVar()
         self.export_path = tk.StringVar()
         self.output_path = tk.StringVar()
+        self.status_text = tk.StringVar(value="대기 중")
+        self.progress_value = tk.IntVar(value=0)
 
+        self.run_button = None
         self._build_ui()
 
     def _build_ui(self):
@@ -174,8 +253,20 @@ class GlInputCopyApp(tk.Tk):
             command=self.select_output,
         )
 
-        run_button = tk.Button(container, text="실행", command=self.run, width=16, height=2)
-        run_button.grid(row=3, column=2, sticky="e", pady=(20, 0))
+        self.progress_bar = ttk.Progressbar(
+            container,
+            variable=self.progress_value,
+            maximum=100,
+            mode="determinate",
+        )
+        self.progress_bar.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(18, 6))
+
+        tk.Label(container, textvariable=self.status_text, anchor="w").grid(
+            row=4, column=0, columnspan=2, sticky="ew"
+        )
+
+        self.run_button = tk.Button(container, text="실행", command=self.run, width=16, height=2)
+        self.run_button.grid(row=4, column=2, sticky="e", pady=(4, 0))
 
         container.grid_columnconfigure(1, weight=1)
 
@@ -249,13 +340,58 @@ class GlInputCopyApp(tk.Tk):
 
         return template_path, export_path, output_path
 
+    def update_progress(self, percent, message):
+        self.after(0, self._set_progress, percent, message)
+
+    def _set_progress(self, percent, message):
+        self.progress_value.set(percent)
+        self.status_text.set(message)
+
+    def set_running(self, is_running):
+        state = tk.DISABLED if is_running else tk.NORMAL
+        if self.run_button:
+            self.run_button.config(state=state)
+
     def run(self):
         try:
             template_path, export_path, output_path = self.validate_inputs()
-            copy_export_to_gl_input(template_path, export_path, output_path)
-            messagebox.showinfo("완료", f"결과 파일을 저장했습니다.\n\n{output_path}")
         except Exception as exc:
             messagebox.showerror("오류", str(exc))
+            return
+
+        self.progress_value.set(0)
+        self.status_text.set("시작하는 중...")
+        self.set_running(True)
+
+        worker = threading.Thread(
+            target=self._run_worker,
+            args=(template_path, export_path, output_path),
+            daemon=True,
+        )
+        worker.start()
+
+    def _run_worker(self, template_path, export_path, output_path):
+        try:
+            copy_export_to_gl_input(
+                template_path,
+                export_path,
+                output_path,
+                progress_callback=self.update_progress,
+            )
+            self.after(0, self._show_success, output_path)
+        except Exception as exc:
+            self.after(0, self._show_error, str(exc))
+
+    def _show_success(self, output_path):
+        self.set_running(False)
+        self.progress_value.set(100)
+        self.status_text.set("완료")
+        messagebox.showinfo("완료", f"결과 파일을 저장했습니다.\n\n{output_path}")
+
+    def _show_error(self, message):
+        self.set_running(False)
+        self.status_text.set("오류 발생")
+        messagebox.showerror("오류", message)
 
 
 if __name__ == "__main__":
