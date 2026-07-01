@@ -15,7 +15,7 @@ except ImportError:
 
 
 APP_NAME = "GL Input Copy Tool"
-APP_VERSION = "0.3.3"
+APP_VERSION = "0.3.4"
 APP_AUTHOR = "DA_GYEONG"
 APP_ICON = "assets/app.ico"
 HEADER_LOGO = "assets/logo_header.png"
@@ -35,6 +35,7 @@ IMPORT_FORMATS = {
     "Austria": {"transform": "austria_fibu_export"},
     "Hungary": {"transform": "hungary_novitax_export"},
     "Poland": {"transform": "poland_accounting_entries"},
+    "Czech Republic": {"transform": "czech_double_entry"},
 }
 BaseTk = TkinterDnD.Tk if TkinterDnD else tk.Tk
 CELL_REFERENCE_RE = re.compile(r"(?<![A-Za-z0-9_])(\$?[A-Z]{1,3})(\$?)(\d+)")
@@ -639,6 +640,90 @@ def build_source_records_poland(source_ws, progress_callback=None):
     return records
 
 
+def build_source_records_czech(source_ws, progress_callback=None):
+    required_headers = [
+        "Datum",
+        "Text",
+        "MD",
+        "DAL",
+        "Částka",
+        "Firma",
+        "Jméno",
+        "English",
+    ]
+    source_header_row, source_columns = find_header_row_and_columns(source_ws, required_headers)
+    records = []
+    total_rows = max(source_ws.max_row - source_header_row, 1)
+
+    for row_number in range(source_header_row + 1, source_ws.max_row + 1):
+        date_value = source_ws.cell(row=row_number, column=source_columns["Datum"]).value
+        if not hasattr(date_value, "year"):
+            continue
+
+        debit_account = source_ws.cell(row=row_number, column=source_columns["MD"]).value
+        credit_account = source_ws.cell(row=row_number, column=source_columns["DAL"]).value
+        signed_amount = normalize_amount(
+            source_ws.cell(row=row_number, column=source_columns["Částka"]).value
+        )
+        if (
+            is_empty_value(debit_account)
+            or is_empty_value(credit_account)
+            or signed_amount is None
+        ):
+            continue
+
+        partner = source_ws.cell(row=row_number, column=source_columns["Firma"]).value
+        if is_empty_value(partner):
+            partner = source_ws.cell(row=row_number, column=source_columns["Jméno"]).value
+
+        description = source_ws.cell(row=row_number, column=source_columns["Text"]).value
+        if is_empty_value(description):
+            description = source_ws.cell(
+                row=row_number,
+                column=source_columns["English"],
+            ).value
+
+        amount = abs(signed_amount)
+        if signed_amount < 0:
+            debit_account, credit_account = credit_account, debit_account
+
+        common = {
+            MATCH_HEADERS[0]: date_value,
+            MATCH_HEADERS[4]: partner,
+            MATCH_HEADERS[5]: description,
+        }
+        records.append(
+            {
+                **common,
+                MATCH_HEADERS[1]: normalize_account_code_value(debit_account),
+                MATCH_HEADERS[2]: amount,
+                MATCH_HEADERS[3]: None,
+            }
+        )
+        records.append(
+            {
+                **common,
+                MATCH_HEADERS[1]: normalize_account_code_value(credit_account),
+                MATCH_HEADERS[2]: None,
+                MATCH_HEADERS[3]: amount,
+            }
+        )
+
+        processed_rows = len(records) // 2
+        if processed_rows % 1000 == 0:
+            percent = 35 + int(((row_number - source_header_row) / total_rows) * 7)
+            report_progress(
+                progress_callback,
+                min(percent, 42),
+                f"Czech GL 거래행을 읽는 중... ({processed_rows}행, 출력 {len(records)}행)",
+            )
+
+    if not records:
+        raise ValueError("Czech GL에서 날짜가 있는 거래 데이터를 찾지 못했습니다.")
+
+    return records
+
+
 def build_source_records(source_ws, import_format, progress_callback=None):
     transform = IMPORT_FORMATS[import_format]["transform"]
     if transform == "standard_debit_credit":
@@ -651,6 +736,8 @@ def build_source_records(source_ws, import_format, progress_callback=None):
         return build_source_records_hungary(source_ws, progress_callback)
     if transform == "poland_accounting_entries":
         return build_source_records_poland(source_ws, progress_callback)
+    if transform == "czech_double_entry":
+        return build_source_records_czech(source_ws, progress_callback)
     raise ValueError(f"지원하지 않는 국가 양식입니다: {import_format}")
 
 
@@ -936,11 +1023,6 @@ class GlInputCopyApp(BaseTk):
             width=40,
         )
         format_combo.grid(row=0, column=1, sticky="w", padx=(8, 8), pady=8)
-        ttk.Label(
-            card,
-            text="Korea / Netherlands / Austria / Hungary / Poland를 지원합니다.",
-            style="Hint.TLabel",
-        ).grid(row=0, column=2, sticky="e", pady=8)
 
         self._add_file_row(
             card,
