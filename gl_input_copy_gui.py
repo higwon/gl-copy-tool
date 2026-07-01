@@ -14,7 +14,7 @@ except ImportError:
 
 
 APP_NAME = "GL Input Copy Tool"
-APP_VERSION = "0.3.0"
+APP_VERSION = "0.3.1"
 APP_AUTHOR = "DA_GYEONG"
 APP_ICON = "assets/app.ico"
 HEADER_LOGO = "assets/logo_header.png"
@@ -23,6 +23,7 @@ STATUS_ERROR_IMAGE = "assets/status_error.png"
 DIALOG_SUCCESS_IMAGE = "assets/dialog_success.png"
 DIALOG_ERROR_IMAGE = "assets/dialog_error.png"
 TARGET_SHEET_NAME = "2. GL Input"
+COA_SHEET_NAME = "1. COA"
 ACCOUNT_CODE_HEADER = "계정코드"
 MATCH_HEADERS = ["날짜", "계정코드", "차변(EUR)", "대변(EUR)", "거래처명", "적요"]
 HEADER_SCAN_ROWS = 30
@@ -267,6 +268,58 @@ def normalize_account_code_value(value):
     return str(value).strip()
 
 
+def normalize_account_code_number(value):
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value) if value.is_integer() else value
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    try:
+        number = float(text.replace(",", ""))
+    except ValueError:
+        return text
+
+    return int(number) if number.is_integer() else number
+
+
+def infer_account_code_mode(template_wb):
+    if COA_SHEET_NAME not in template_wb.sheetnames:
+        return "text"
+
+    coa_ws = template_wb[COA_SHEET_NAME]
+    try:
+        header_row, columns = find_header_row_and_columns(coa_ws, [ACCOUNT_CODE_HEADER])
+    except ValueError:
+        return "text"
+
+    account_code_column = columns[ACCOUNT_CODE_HEADER]
+    has_account_code = False
+    for row_number in range(header_row + 1, coa_ws.max_row + 1):
+        cell = coa_ws.cell(row=row_number, column=account_code_column)
+        if is_empty_value(cell.value):
+            continue
+
+        has_account_code = True
+        if isinstance(cell.value, str) or cell.data_type == "s":
+            return "text"
+
+    return "number" if has_account_code else "text"
+
+
+def coerce_account_code_value(value, account_code_mode):
+    if account_code_mode == "number":
+        return normalize_account_code_number(value)
+    return normalize_account_code_value(value)
+
+
 def normalize_amount(value, absolute=False):
     if is_empty_value(value):
         return None
@@ -284,22 +337,23 @@ def build_source_records_standard(source_ws, progress_callback=None):
         if not row_has_data(source_ws, row_number, source_columns.values()):
             continue
 
-        records.append(
-            {
-                header: source_ws.cell(
-                    row=row_number,
-                    column=source_columns[header],
-                ).value
-                for header in MATCH_HEADERS
-            }
-        )
+        record = {
+            header: source_ws.cell(
+                row=row_number,
+                column=source_columns[header],
+            ).value
+            for header in MATCH_HEADERS
+        }
+        record["차변(EUR)"] = normalize_amount(record["차변(EUR)"], absolute=True)
+        record["대변(EUR)"] = normalize_amount(record["대변(EUR)"], absolute=True)
+        records.append(record)
 
         if len(records) % 1000 == 0:
             percent = 35 + int(((row_number - source_header_row) / total_rows) * 7)
             report_progress(
                 progress_callback,
                 min(percent, 42),
-                f"Import Data를 읽는 중... ({len(records)}행 발견)",
+                f"Source GL을 읽는 중... ({len(records)}행 발견)",
             )
 
     return records
@@ -344,8 +398,8 @@ def build_source_records_netherlands(source_ws, progress_callback=None):
             {
                 "날짜": first_value,
                 "계정코드": current_account_code,
-                "차변(EUR)": debit,
-                "대변(EUR)": credit,
+                "차변(EUR)": normalize_amount(debit, absolute=True),
+                "대변(EUR)": normalize_amount(credit, absolute=True),
                 "거래처명": account_name,
                 "적요": description,
             }
@@ -394,7 +448,7 @@ def build_source_records_austria(source_ws, progress_callback=None):
             {
                 "날짜": date_value,
                 "계정코드": normalize_account_code_value(account_code),
-                "차변(EUR)": normalize_amount(debit),
+                "차변(EUR)": normalize_amount(debit, absolute=True),
                 "대변(EUR)": normalize_amount(credit, absolute=True),
                 "거래처명": None,
                 "적요": description,
@@ -423,16 +477,16 @@ def build_source_records(source_ws, import_format, progress_callback=None):
         return build_source_records_netherlands(source_ws, progress_callback)
     if transform == "austria_fibu_export":
         return build_source_records_austria(source_ws, progress_callback)
-    raise ValueError(f"지원하지 않는 Import Data 양식입니다: {import_format}")
+    raise ValueError(f"지원하지 않는 국가 양식입니다: {import_format}")
 
 
-def set_target_cell_value(header, value, target_cell):
+def set_target_cell_value(header, value, target_cell, account_code_mode="text"):
     if header == ACCOUNT_CODE_HEADER:
-        if value is None:
-            target_cell.value = None
+        target_cell.value = coerce_account_code_value(value, account_code_mode)
+        if account_code_mode == "number":
+            target_cell.number_format = "General"
         else:
-            target_cell.value = normalize_account_code_value(value)
-        target_cell.number_format = "@"
+            target_cell.number_format = "@"
     else:
         target_cell.value = value
 
@@ -474,8 +528,9 @@ def copy_export_to_gl_input(
     report_progress(progress_callback, 25, "헤더를 찾는 중...")
     formula_columns = find_formula_columns(target_ws)
     target_header_row, target_columns = find_header_row_and_columns(target_ws, MATCH_HEADERS)
+    account_code_mode = infer_account_code_mode(template_wb)
 
-    report_progress(progress_callback, 35, "Import Data를 읽는 중...")
+    report_progress(progress_callback, 35, "Source GL을 읽는 중...")
     source_records = build_source_records(source_ws, import_format, progress_callback)
 
     report_progress(progress_callback, 42, "GL Input 표 범위와 서식을 준비하는 중...")
@@ -509,7 +564,12 @@ def copy_export_to_gl_input(
             if is_formula_cell(target_cell):
                 continue
 
-            set_target_cell_value(header, source_record.get(header), target_cell)
+            set_target_cell_value(
+                header,
+                source_record.get(header),
+                target_cell,
+                account_code_mode,
+            )
 
         percent = 45 + int((row_offset / total_rows) * 35)
         report_progress(
@@ -679,7 +739,7 @@ class GlInputCopyApp(BaseTk):
         )
         ttk.Label(
             header_frame,
-            text="Import Data를 GL Auto 템플릿의 2. GL Input 시트로 옮깁니다.",
+            text="Source GL 데이터를 GL Auto 템플릿의 2. GL Input 시트로 옮깁니다.",
             style="Subtitle.TLabel",
         ).grid(row=1, column=1, sticky="w", pady=(2, 0))
         ttk.Label(
@@ -691,7 +751,7 @@ class GlInputCopyApp(BaseTk):
         card = ttk.Frame(container, padding=18, style="Card.TFrame")
         card.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(16, 0))
 
-        ttk.Label(card, text="Import Data 양식", anchor="w", width=18, style="Field.TLabel").grid(
+        ttk.Label(card, text="국가 선택", anchor="w", width=18, style="Field.TLabel").grid(
             row=0, column=0, sticky="w", pady=8
         )
         format_combo = ttk.Combobox(
@@ -719,7 +779,7 @@ class GlInputCopyApp(BaseTk):
         self._add_file_row(
             card,
             row=2,
-            label="Import Data xlsx",
+            label="Source GL xlsx",
             variable=self.export_path,
             command=self.select_export,
             drop_role="export",
@@ -947,7 +1007,7 @@ class GlInputCopyApp(BaseTk):
 
     def select_export(self):
         path = filedialog.askopenfilename(
-            title="Import Data xlsx 선택",
+            title="Source GL xlsx 선택",
             filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")],
         )
         if path:
@@ -978,17 +1038,17 @@ class GlInputCopyApp(BaseTk):
         output_path = self.output_path.get().strip()
 
         if import_format not in IMPORT_FORMATS:
-            raise ValueError("Import Data 양식을 선택하세요.")
+            raise ValueError("국가를 선택하세요.")
         if not template_path:
             raise ValueError("GL Auto 템플릿 xlsx를 선택하세요.")
         if not export_path:
-            raise ValueError("Import Data xlsx를 선택하세요.")
+            raise ValueError("Source GL xlsx를 선택하세요.")
         if not output_path:
             raise ValueError("결과 저장 경로를 선택하세요.")
         if not os.path.isfile(template_path):
             raise ValueError("GL Auto 템플릿 파일을 찾을 수 없습니다.")
         if not os.path.isfile(export_path):
-            raise ValueError("Import Data 파일을 찾을 수 없습니다.")
+            raise ValueError("Source GL 파일을 찾을 수 없습니다.")
         if os.path.abspath(template_path) == os.path.abspath(output_path):
             raise ValueError("결과 파일은 GL Auto 템플릿과 다른 경로로 저장하세요.")
 
@@ -1100,7 +1160,7 @@ class GlInputCopyApp(BaseTk):
         self._set_result_status_image(self.status_success_image)
         self._set_summary_text(
             "성공: GL Input 데이터 입력을 완료했습니다.\n"
-            f"Import Data 양식: {result['import_format']}\n"
+            f"국가 선택: {result['import_format']}\n"
             f"입력 행 수: {result['copied_rows']} / "
             f"삭제된 하단 행 수: {result['deleted_rows']} / "
             f"조정된 표 범위: {result['adjusted_tables']}\n"

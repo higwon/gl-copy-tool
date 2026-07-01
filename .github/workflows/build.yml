@@ -43,16 +43,12 @@ jobs:
         shell: pwsh
         run: |
           Compress-Archive -Path dist\GLInputCopyTool\* -DestinationPath GLInputCopyTool-${{ github.ref_name }}.zip -Force
-          $hash = Get-FileHash GLInputCopyTool-${{ github.ref_name }}.zip -Algorithm SHA256
-          "$($hash.Hash)  GLInputCopyTool-${{ github.ref_name }}.zip" | Set-Content -Encoding ASCII GLInputCopyTool-${{ github.ref_name }}.zip.sha256
 
       - name: Upload zip artifact
         uses: actions/upload-artifact@v4
         with:
           name: GLInputCopyTool-${{ github.ref_name }}
-          path: |
-            GLInputCopyTool-${{ github.ref_name }}.zip
-            GLInputCopyTool-${{ github.ref_name }}.zip.sha256
+          path: GLInputCopyTool-${{ github.ref_name }}.zip
           if-no-files-found: error
           retention-days: 14
 
@@ -62,6 +58,4 @@ jobs:
         with:
           name: GL Input Copy Tool ${{ github.ref_name }}
           body_path: RELEASE_NOTES.md
-          files: |
-            GLInputCopyTool-${{ github.ref_name }}.zip
-            GLInputCopyTool-${{ github.ref_name }}.zip.sha256
+          files: GLInputCopyTool-${{ github.ref_name }}.zip

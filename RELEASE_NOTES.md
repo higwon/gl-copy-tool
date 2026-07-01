@@ -1,5 +1,22 @@
 # Release Notes
 
+## v0.3.1
+
+GL Input 입력값 정규화와 배포 파일명을 정리한 패치 릴리즈입니다.
+
+### 변경
+
+- 차변/대변이 분리된 Source GL 양식은 `차변(EUR)`, `대변(EUR)` 값을 모두 양수 금액으로 변환해 입력합니다.
+- `계정코드`는 GL Auto 템플릿의 `1. COA` 시트에 저장된 실제 `계정코드` 타입을 따라 텍스트 또는 숫자로 입력합니다.
+- UI 라벨을 `Import Data 양식`에서 `국가 선택`으로, `Import Data xlsx`에서 `Source GL xlsx`로 변경했습니다.
+- PyInstaller 실행 파일명에 앱 버전을 붙이도록 변경했습니다. 예: `GLInputCopyTool-v0.3.1.exe`
+- GitHub Actions Release asset에서 SHA256 파일 생성을 제거하고 zip 파일만 배포합니다.
+
+### 검증
+
+- Python 문법 체크를 통과했습니다.
+- Austria 실제 GL 파일 변환에서 차변/대변 금액이 양수로 입력되는 것을 확인했습니다.
+
 ## v0.3.0
 
 국가별 Import Data 양식 지원과 대용량 처리 진행 표시를 개선한 릴리즈입니다.
