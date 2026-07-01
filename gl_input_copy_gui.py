@@ -7,6 +7,8 @@ import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
+from countries import DEFAULT_IMPORT_FORMAT, IMPORT_FORMATS, build_source_records
+
 try:
     from tkinterdnd2 import DND_FILES, TkinterDnD
 except ImportError:
@@ -15,7 +17,7 @@ except ImportError:
 
 
 APP_NAME = "GL Input Copy Tool"
-APP_VERSION = "0.3.5"
+APP_VERSION = "0.4.0"
 APP_AUTHOR = "DA_GYEONG"
 APP_ICON = "assets/app.ico"
 HEADER_LOGO = "assets/logo_header.png"
@@ -28,16 +30,6 @@ COA_SHEET_NAME = "1. COA"
 ACCOUNT_CODE_HEADER = "계정코드"
 MATCH_HEADERS = ["날짜", "계정코드", "차변(EUR)", "대변(EUR)", "거래처명", "적요"]
 HEADER_SCAN_ROWS = 30
-DEFAULT_IMPORT_FORMAT = "한국 (Korea)"
-IMPORT_FORMATS = {
-    "한국 (Korea)": {"transform": "standard_debit_credit"},
-    "네덜란드 (Netherlands)": {"transform": "netherlands_gl_transactions"},
-    "오스트리아 (Austria)": {"transform": "austria_fibu_export"},
-    "헝가리 (Hungary)": {"transform": "hungary_novitax_export"},
-    "폴란드 (Poland)": {"transform": "poland_accounting_entries"},
-    "체코 (Czech Republic)": {"transform": "czech_double_entry"},
-    "슬로바키아 (Slovakia)": {"transform": "slovakia_double_entry"},
-}
 BaseTk = TkinterDnD.Tk if TkinterDnD else tk.Tk
 CELL_REFERENCE_RE = re.compile(r"(?<![A-Za-z0-9_])(\$?[A-Z]{1,3})(\$?)(\d+)")
 
@@ -89,13 +81,6 @@ def find_header_row_and_columns(sheet, required_headers):
     )
 
 
-def row_has_data(sheet, row_number, columns):
-    for column in columns:
-        if sheet.cell(row=row_number, column=column).value not in (None, ""):
-            return True
-    return False
-
-
 def find_formula_columns(sheet):
     formula_columns = set()
     for row in sheet.iter_rows():
@@ -115,33 +100,6 @@ def clear_target_data(sheet, header_row, target_columns, formula_columns, min_cl
                 continue
             if cell.column in target_columns and cell.column not in formula_columns:
                 cell.value = None
-
-
-def copy_cell_style(source_cell, target_cell):
-    if source_cell.has_style:
-        target_cell._style = copy.copy(source_cell._style)
-    if source_cell.number_format:
-        target_cell.number_format = source_cell.number_format
-    if source_cell.alignment:
-        target_cell.alignment = copy.copy(source_cell.alignment)
-    if source_cell.protection:
-        target_cell.protection = copy.copy(source_cell.protection)
-
-
-def copy_row_style(sheet, source_row_number, target_row_number):
-    source_dimension = sheet.row_dimensions[source_row_number]
-    target_dimension = sheet.row_dimensions[target_row_number]
-    target_dimension.height = source_dimension.height
-    target_dimension.hidden = source_dimension.hidden
-    target_dimension.outlineLevel = source_dimension.outlineLevel
-    target_dimension.collapsed = source_dimension.collapsed
-
-    for column_number in range(1, sheet.max_column + 1):
-        source_cell = sheet.cell(row=source_row_number, column=column_number)
-        target_cell = sheet.cell(row=target_row_number, column=column_number)
-        if is_read_only_merged_cell(target_cell):
-            continue
-        copy_cell_style(source_cell, target_cell)
 
 
 def build_row_style_template(sheet, source_row_number):
@@ -292,28 +250,8 @@ def fill_formula_columns(sheet, header_row, data_row_count, formula_columns):
                 target_cell.number_format = template_cell.number_format
 
 
-def copy_cell_value_only(source_cell, target_cell):
-    target_cell.value = source_cell.value
-
-
 def is_empty_value(value):
     return value is None or value == "" or (isinstance(value, str) and not value.strip())
-
-
-def parse_account_block(value):
-    if not isinstance(value, str):
-        return None
-
-    text = value.strip()
-    if " - " not in text:
-        return None
-
-    code, name = text.split(" - ", 1)
-    code = code.strip()
-    if not code:
-        return None
-
-    return code, name.strip()
 
 
 def normalize_account_code_value(value):
@@ -376,448 +314,6 @@ def coerce_account_code_value(value, account_code_mode):
     return normalize_account_code_value(value)
 
 
-def normalize_amount(value, absolute=False):
-    if is_empty_value(value):
-        return None
-    if isinstance(value, (int, float)):
-        return abs(value) if absolute else value
-    return value
-
-
-def build_source_records_standard(source_ws, progress_callback=None):
-    source_header_row, source_columns = find_header_row_and_columns(source_ws, MATCH_HEADERS)
-    records = []
-    total_rows = max(source_ws.max_row - source_header_row, 1)
-
-    for row_number in range(source_header_row + 1, source_ws.max_row + 1):
-        if not row_has_data(source_ws, row_number, source_columns.values()):
-            continue
-
-        record = {
-            header: source_ws.cell(
-                row=row_number,
-                column=source_columns[header],
-            ).value
-            for header in MATCH_HEADERS
-        }
-        record["차변(EUR)"] = normalize_amount(record["차변(EUR)"], absolute=True)
-        record["대변(EUR)"] = normalize_amount(record["대변(EUR)"], absolute=True)
-        records.append(record)
-
-        if len(records) % 1000 == 0:
-            percent = 35 + int(((row_number - source_header_row) / total_rows) * 7)
-            report_progress(
-                progress_callback,
-                min(percent, 42),
-                f"Source GL을 읽는 중... ({len(records)}행 발견)",
-            )
-
-    return records
-
-
-def build_source_records_netherlands(source_ws, progress_callback=None):
-    required_headers = [
-        "Date",
-        "Description",
-        "Debit",
-        "Credit",
-        "Account name",
-    ]
-    source_header_row, source_columns = find_header_row_and_columns(source_ws, required_headers)
-    current_account_code = None
-    records = []
-    total_rows = max(source_ws.max_row - source_header_row, 1)
-
-    for row_number in range(source_header_row + 1, source_ws.max_row + 1):
-        first_value = source_ws.cell(row=row_number, column=1).value
-        second_value = source_ws.cell(row=row_number, column=2).value
-        account_block = parse_account_block(first_value)
-        if account_block and is_empty_value(second_value):
-            current_account_code = normalize_account_code_value(account_block[0])
-            continue
-
-        if not hasattr(first_value, "year"):
-            continue
-
-        if not current_account_code:
-            continue
-
-        debit = source_ws.cell(row=row_number, column=source_columns["Debit"]).value
-        credit = source_ws.cell(row=row_number, column=source_columns["Credit"]).value
-        description = source_ws.cell(row=row_number, column=source_columns["Description"]).value
-        account_name = source_ws.cell(row=row_number, column=source_columns["Account name"]).value
-
-        if is_empty_value(debit) and is_empty_value(credit) and is_empty_value(description):
-            continue
-
-        records.append(
-            {
-                "날짜": first_value,
-                "계정코드": current_account_code,
-                "차변(EUR)": normalize_amount(debit, absolute=True),
-                "대변(EUR)": normalize_amount(credit, absolute=True),
-                "거래처명": account_name,
-                "적요": description,
-            }
-        )
-
-        if len(records) % 1000 == 0:
-            percent = 35 + int(((row_number - source_header_row) / total_rows) * 7)
-            report_progress(
-                progress_callback,
-                min(percent, 42),
-                f"Netherlands GL 거래행을 읽는 중... ({len(records)}행)",
-            )
-
-    if not records:
-        raise ValueError("Netherlands GL에서 날짜가 있는 거래 데이터를 찾지 못했습니다.")
-
-    return records
-
-
-def build_source_records_austria(source_ws, progress_callback=None):
-    required_headers = [
-        "Kto-Nr",
-        "Beleg-Dat",
-        "Text",
-        "GW-Soll",
-        "GW-Haben",
-    ]
-    source_header_row, source_columns = find_header_row_and_columns(source_ws, required_headers)
-    records = []
-    total_rows = max(source_ws.max_row - source_header_row, 1)
-
-    for row_number in range(source_header_row + 1, source_ws.max_row + 1):
-        date_value = source_ws.cell(row=row_number, column=source_columns["Beleg-Dat"]).value
-        if not hasattr(date_value, "year"):
-            continue
-
-        account_code = source_ws.cell(row=row_number, column=source_columns["Kto-Nr"]).value
-        description = source_ws.cell(row=row_number, column=source_columns["Text"]).value
-        debit = source_ws.cell(row=row_number, column=source_columns["GW-Soll"]).value
-        credit = source_ws.cell(row=row_number, column=source_columns["GW-Haben"]).value
-
-        if is_empty_value(account_code) and is_empty_value(debit) and is_empty_value(credit):
-            continue
-
-        records.append(
-            {
-                "날짜": date_value,
-                "계정코드": normalize_account_code_value(account_code),
-                "차변(EUR)": normalize_amount(debit, absolute=True),
-                "대변(EUR)": normalize_amount(credit, absolute=True),
-                "거래처명": None,
-                "적요": description,
-            }
-        )
-
-        if len(records) % 1000 == 0:
-            percent = 35 + int(((row_number - source_header_row) / total_rows) * 7)
-            report_progress(
-                progress_callback,
-                min(percent, 42),
-                f"Austria FIBU 거래행을 읽는 중... ({len(records)}행)",
-            )
-
-    if not records:
-        raise ValueError("Austria FIBU Export에서 날짜가 있는 거래 데이터를 찾지 못했습니다.")
-
-    return records
-
-
-def build_source_records_hungary(source_ws, progress_callback=None):
-    required_headers = [
-        "Budgetary account",
-        "Számviteli teljesítés",
-        "Tartozik",
-        "Követel",
-        "Megjegyzés",
-        "Partner",
-    ]
-    source_header_row, source_columns = find_header_row_and_columns(source_ws, required_headers)
-    records = []
-    total_rows = max(source_ws.max_row - source_header_row, 1)
-
-    for row_number in range(source_header_row + 1, source_ws.max_row + 1):
-        date_value = source_ws.cell(
-            row=row_number,
-            column=source_columns["Számviteli teljesítés"],
-        ).value
-        if not hasattr(date_value, "year"):
-            continue
-
-        account_code = source_ws.cell(
-            row=row_number,
-            column=source_columns["Budgetary account"],
-        ).value
-        debit = source_ws.cell(row=row_number, column=source_columns["Tartozik"]).value
-        credit = source_ws.cell(row=row_number, column=source_columns["Követel"]).value
-        description = source_ws.cell(row=row_number, column=source_columns["Megjegyzés"]).value
-        partner = source_ws.cell(row=row_number, column=source_columns["Partner"]).value
-
-        if is_empty_value(account_code) and is_empty_value(debit) and is_empty_value(credit):
-            continue
-
-        records.append(
-            {
-                "날짜": date_value,
-                "계정코드": normalize_account_code_value(account_code),
-                "차변(EUR)": normalize_amount(debit, absolute=True),
-                "대변(EUR)": normalize_amount(credit, absolute=True),
-                "거래처명": partner,
-                "적요": description,
-            }
-        )
-
-        if len(records) % 1000 == 0:
-            percent = 35 + int(((row_number - source_header_row) / total_rows) * 7)
-            report_progress(
-                progress_callback,
-                min(percent, 42),
-                f"Hungary Novitax 거래행을 읽는 중... ({len(records)}행)",
-            )
-
-    if not records:
-        raise ValueError("Hungary Novitax Export에서 날짜가 있는 거래 데이터를 찾지 못했습니다.")
-
-    return records
-
-
-def build_source_records_poland(source_ws, progress_callback=None):
-    required_headers = [
-        "Konto",
-        "Data księgowania",
-        "Kwota Wn",
-        "Kwota Ma",
-        "Nazwa podmiotu",
-        "Opis",
-    ]
-    source_header_row, source_columns = find_header_row_and_columns(source_ws, required_headers)
-    records = []
-    total_rows = max(source_ws.max_row - source_header_row, 1)
-
-    for row_number in range(source_header_row + 1, source_ws.max_row + 1):
-        date_value = source_ws.cell(
-            row=row_number,
-            column=source_columns["Data księgowania"],
-        ).value
-        if not hasattr(date_value, "year"):
-            continue
-
-        account_code = source_ws.cell(row=row_number, column=source_columns["Konto"]).value
-        debit = source_ws.cell(row=row_number, column=source_columns["Kwota Wn"]).value
-        credit = source_ws.cell(row=row_number, column=source_columns["Kwota Ma"]).value
-        partner = source_ws.cell(
-            row=row_number,
-            column=source_columns["Nazwa podmiotu"],
-        ).value
-        description = source_ws.cell(row=row_number, column=source_columns["Opis"]).value
-
-        if is_empty_value(account_code) and is_empty_value(debit) and is_empty_value(credit):
-            continue
-
-        records.append(
-            {
-                MATCH_HEADERS[0]: date_value,
-                MATCH_HEADERS[1]: normalize_account_code_value(account_code),
-                MATCH_HEADERS[2]: normalize_amount(debit, absolute=True),
-                MATCH_HEADERS[3]: normalize_amount(credit, absolute=True),
-                MATCH_HEADERS[4]: partner,
-                MATCH_HEADERS[5]: description,
-            }
-        )
-
-        if len(records) % 1000 == 0:
-            percent = 35 + int(((row_number - source_header_row) / total_rows) * 7)
-            report_progress(
-                progress_callback,
-                min(percent, 42),
-                f"Poland GL 거래행을 읽는 중... ({len(records)}행)",
-            )
-
-    if not records:
-        raise ValueError("Poland GL에서 날짜가 있는 거래 데이터를 찾지 못했습니다.")
-
-    return records
-
-
-def build_source_records_czech(source_ws, progress_callback=None):
-    required_headers = [
-        "Datum",
-        "Text",
-        "MD",
-        "DAL",
-        "Částka",
-        "Firma",
-        "Jméno",
-        "English",
-    ]
-    source_header_row, source_columns = find_header_row_and_columns(source_ws, required_headers)
-    records = []
-    total_rows = max(source_ws.max_row - source_header_row, 1)
-
-    for row_number in range(source_header_row + 1, source_ws.max_row + 1):
-        date_value = source_ws.cell(row=row_number, column=source_columns["Datum"]).value
-        if not hasattr(date_value, "year"):
-            continue
-
-        debit_account = source_ws.cell(row=row_number, column=source_columns["MD"]).value
-        credit_account = source_ws.cell(row=row_number, column=source_columns["DAL"]).value
-        signed_amount = normalize_amount(
-            source_ws.cell(row=row_number, column=source_columns["Částka"]).value
-        )
-        if (
-            is_empty_value(debit_account)
-            or is_empty_value(credit_account)
-            or signed_amount is None
-        ):
-            continue
-
-        partner = source_ws.cell(row=row_number, column=source_columns["Firma"]).value
-        if is_empty_value(partner):
-            partner = source_ws.cell(row=row_number, column=source_columns["Jméno"]).value
-
-        description = source_ws.cell(row=row_number, column=source_columns["Text"]).value
-        if is_empty_value(description):
-            description = source_ws.cell(
-                row=row_number,
-                column=source_columns["English"],
-            ).value
-
-        amount = abs(signed_amount)
-        if signed_amount < 0:
-            debit_account, credit_account = credit_account, debit_account
-
-        common = {
-            MATCH_HEADERS[0]: date_value,
-            MATCH_HEADERS[4]: partner,
-            MATCH_HEADERS[5]: description,
-        }
-        records.append(
-            {
-                **common,
-                MATCH_HEADERS[1]: normalize_account_code_value(debit_account),
-                MATCH_HEADERS[2]: amount,
-                MATCH_HEADERS[3]: None,
-            }
-        )
-        records.append(
-            {
-                **common,
-                MATCH_HEADERS[1]: normalize_account_code_value(credit_account),
-                MATCH_HEADERS[2]: None,
-                MATCH_HEADERS[3]: amount,
-            }
-        )
-
-        processed_rows = len(records) // 2
-        if processed_rows % 1000 == 0:
-            percent = 35 + int(((row_number - source_header_row) / total_rows) * 7)
-            report_progress(
-                progress_callback,
-                min(percent, 42),
-                f"Czech GL 거래행을 읽는 중... ({processed_rows}행, 출력 {len(records)}행)",
-            )
-
-    if not records:
-        raise ValueError("Czech GL에서 날짜가 있는 거래 데이터를 찾지 못했습니다.")
-
-    return records
-
-
-def build_source_records_slovakia(source_ws, progress_callback=None):
-    required_headers = [
-        "Dátum",
-        "DAL",
-        "Text",
-        "MD",
-        "Čiastka",
-        "Firma",
-    ]
-    source_header_row, source_columns = find_header_row_and_columns(source_ws, required_headers)
-    records = []
-    total_rows = max(source_ws.max_row - source_header_row, 1)
-
-    for row_number in range(source_header_row + 1, source_ws.max_row + 1):
-        date_value = source_ws.cell(row=row_number, column=source_columns["Dátum"]).value
-        if not hasattr(date_value, "year"):
-            continue
-
-        debit_account = source_ws.cell(row=row_number, column=source_columns["MD"]).value
-        credit_account = source_ws.cell(row=row_number, column=source_columns["DAL"]).value
-        signed_amount = normalize_amount(
-            source_ws.cell(row=row_number, column=source_columns["Čiastka"]).value
-        )
-        if (
-            is_empty_value(debit_account)
-            or is_empty_value(credit_account)
-            or signed_amount is None
-        ):
-            continue
-
-        partner = source_ws.cell(row=row_number, column=source_columns["Firma"]).value
-        description = source_ws.cell(row=row_number, column=source_columns["Text"]).value
-        amount = abs(signed_amount)
-        if signed_amount < 0:
-            debit_account, credit_account = credit_account, debit_account
-
-        common = {
-            MATCH_HEADERS[0]: date_value,
-            MATCH_HEADERS[4]: partner,
-            MATCH_HEADERS[5]: description,
-        }
-        records.append(
-            {
-                **common,
-                MATCH_HEADERS[1]: normalize_account_code_value(debit_account),
-                MATCH_HEADERS[2]: amount,
-                MATCH_HEADERS[3]: None,
-            }
-        )
-        records.append(
-            {
-                **common,
-                MATCH_HEADERS[1]: normalize_account_code_value(credit_account),
-                MATCH_HEADERS[2]: None,
-                MATCH_HEADERS[3]: amount,
-            }
-        )
-
-        processed_rows = len(records) // 2
-        if processed_rows % 1000 == 0:
-            percent = 35 + int(((row_number - source_header_row) / total_rows) * 7)
-            report_progress(
-                progress_callback,
-                min(percent, 42),
-                f"Slovakia GL 거래행을 읽는 중... "
-                f"({processed_rows}행, 출력 {len(records)}행)",
-            )
-
-    if not records:
-        raise ValueError("Slovakia GL에서 날짜가 있는 거래 데이터를 찾지 못했습니다.")
-
-    return records
-
-
-def build_source_records(source_ws, import_format, progress_callback=None):
-    transform = IMPORT_FORMATS[import_format]["transform"]
-    if transform == "standard_debit_credit":
-        return build_source_records_standard(source_ws, progress_callback)
-    if transform == "netherlands_gl_transactions":
-        return build_source_records_netherlands(source_ws, progress_callback)
-    if transform == "austria_fibu_export":
-        return build_source_records_austria(source_ws, progress_callback)
-    if transform == "hungary_novitax_export":
-        return build_source_records_hungary(source_ws, progress_callback)
-    if transform == "poland_accounting_entries":
-        return build_source_records_poland(source_ws, progress_callback)
-    if transform == "czech_double_entry":
-        return build_source_records_czech(source_ws, progress_callback)
-    if transform == "slovakia_double_entry":
-        return build_source_records_slovakia(source_ws, progress_callback)
-    raise ValueError(f"지원하지 않는 국가 양식입니다: {import_format}")
-
-
 def set_target_cell_value(header, value, target_cell, account_code_mode="text"):
     if header == ACCOUNT_CODE_HEADER:
         target_cell.value = coerce_account_code_value(value, account_code_mode)
@@ -827,14 +323,6 @@ def set_target_cell_value(header, value, target_cell, account_code_mode="text"):
             target_cell.number_format = "@"
     else:
         target_cell.value = value
-
-
-def copy_account_code_as_text(source_cell, target_cell):
-    if source_cell.value is None:
-        target_cell.value = None
-    else:
-        target_cell.value = str(source_cell.value)
-    target_cell.number_format = "@"
 
 
 def copy_export_to_gl_input(
@@ -869,7 +357,10 @@ def copy_export_to_gl_input(
     account_code_mode = infer_account_code_mode(template_wb)
 
     report_progress(progress_callback, 35, "Source GL을 읽는 중...")
-    source_records = build_source_records(source_ws, import_format, progress_callback)
+    try:
+        source_records = build_source_records(source_ws, import_format, progress_callback)
+    finally:
+        export_wb.close()
 
     report_progress(progress_callback, 42, "GL Input 표 범위와 서식을 준비하는 중...")
     expand_target_rows(target_ws, target_header_row, len(source_records), progress_callback)
@@ -909,12 +400,13 @@ def copy_export_to_gl_input(
                 account_code_mode,
             )
 
-        percent = 45 + int((row_offset / total_rows) * 35)
-        report_progress(
-            progress_callback,
-            percent,
-            f"GL Input에 데이터 입력 중... ({row_offset}/{len(source_records)})",
-        )
+        if row_offset % 250 == 0 or row_offset == len(source_records):
+            percent = 45 + int((row_offset / total_rows) * 35)
+            report_progress(
+                progress_callback,
+                percent,
+                f"GL Input에 데이터 입력 중... ({row_offset}/{len(source_records)})",
+            )
 
     report_progress(progress_callback, 82, "수식 컬럼을 정리하는 중...")
     fill_formula_columns(target_ws, target_header_row, len(source_records), formula_columns)
@@ -928,6 +420,7 @@ def copy_export_to_gl_input(
 
     report_progress(progress_callback, None, "결과 파일을 저장하는 중...")
     template_wb.save(output_path)
+    template_wb.close()
     report_progress(progress_callback, 100, "완료")
     return {
         "copied_rows": len(source_records),
@@ -943,9 +436,10 @@ class GlInputCopyApp(BaseTk):
         super().__init__()
 
         self.title(APP_NAME)
-        self.geometry("860x560")
-        self.resizable(False, False)
-        self.configure(bg="#F5F7FA")
+        self.geometry("940x650")
+        self.minsize(820, 600)
+        self.resizable(True, True)
+        self.configure(bg="#F3F5F7")
 
         self._set_window_icon()
         self.header_logo_image = self._load_photo_image(HEADER_LOGO)
@@ -993,30 +487,36 @@ class GlInputCopyApp(BaseTk):
 
     def _configure_style(self):
         self.style.theme_use("clam")
-        self.style.configure("App.TFrame", background="#F5F7FA")
+        self.style.configure("App.TFrame", background="#F3F5F7")
         self.style.configure("Card.TFrame", background="#FFFFFF", relief="flat")
         self.style.configure(
             "Title.TLabel",
-            background="#F5F7FA",
-            foreground="#1F2937",
-            font=("Segoe UI", 16, "bold"),
+            background="#F3F5F7",
+            foreground="#16343B",
+            font=("Segoe UI", 18, "bold"),
         )
         self.style.configure(
             "Subtitle.TLabel",
-            background="#F5F7FA",
-            foreground="#6B7280",
+            background="#F3F5F7",
+            foreground="#64727A",
             font=("Segoe UI", 9),
         )
         self.style.configure(
             "Meta.TLabel",
-            background="#F5F7FA",
-            foreground="#6B7280",
+            background="#F3F5F7",
+            foreground="#64727A",
             font=("Segoe UI", 9),
+        )
+        self.style.configure(
+            "Section.TLabel",
+            background="#FFFFFF",
+            foreground="#16343B",
+            font=("Segoe UI", 10, "bold"),
         )
         self.style.configure(
             "Field.TLabel",
             background="#FFFFFF",
-            foreground="#374151",
+            foreground="#34454C",
             font=("Segoe UI", 9, "bold"),
         )
         self.style.configure(
@@ -1028,7 +528,7 @@ class GlInputCopyApp(BaseTk):
         self.style.configure(
             "Status.TLabel",
             background="#FFFFFF",
-            foreground="#4B5563",
+            foreground="#52636B",
             font=("Segoe UI", 9),
         )
         self.style.configure(
@@ -1042,26 +542,35 @@ class GlInputCopyApp(BaseTk):
             "Primary.TButton",
             font=("Segoe UI", 10, "bold"),
             padding=(18, 10),
-            background="#2563EB",
+            background="#0F766E",
             foreground="#FFFFFF",
         )
         self.style.map(
             "Primary.TButton",
-            background=[("active", "#1D4ED8"), ("disabled", "#9CA3AF")],
+            background=[("active", "#0B5F59"), ("disabled", "#9AA8AC")],
             foreground=[("disabled", "#F3F4F6")],
         )
-        self.style.configure("Browse.TButton", font=("Segoe UI", 9), padding=(10, 6))
+        self.style.configure(
+            "Browse.TButton",
+            font=("Segoe UI", 9),
+            padding=(11, 7),
+            background="#E8EEF0",
+            foreground="#294047",
+        )
+        self.style.map("Browse.TButton", background=[("active", "#DCE6E8")])
+        self.style.configure("TEntry", padding=7, fieldbackground="#FBFCFC")
+        self.style.configure("TCombobox", padding=6, fieldbackground="#FBFCFC")
         self.style.configure(
             "Blue.Horizontal.TProgressbar",
-            troughcolor="#E5E7EB",
-            background="#2563EB",
-            bordercolor="#E5E7EB",
-            lightcolor="#2563EB",
-            darkcolor="#2563EB",
+            troughcolor="#E2E8EA",
+            background="#0F766E",
+            bordercolor="#E2E8EA",
+            lightcolor="#0F766E",
+            darkcolor="#0F766E",
         )
 
     def _build_ui(self):
-        container = ttk.Frame(self, padding=20, style="App.TFrame")
+        container = ttk.Frame(self, padding=(26, 22), style="App.TFrame")
         container.pack(fill=tk.BOTH, expand=True)
 
         header_frame = ttk.Frame(container, style="App.TFrame")
@@ -1077,7 +586,7 @@ class GlInputCopyApp(BaseTk):
         )
         ttk.Label(
             header_frame,
-            text="Source GL 데이터를 GL Auto 템플릿의 2. GL Input 시트로 옮깁니다.",
+            text="국가별 GL 데이터를 GL Auto 템플릿 형식으로 변환합니다.",
             style="Subtitle.TLabel",
         ).grid(row=1, column=1, sticky="w", pady=(2, 0))
         ttk.Label(
@@ -1086,24 +595,28 @@ class GlInputCopyApp(BaseTk):
             style="Meta.TLabel",
         ).grid(row=0, column=1, sticky="ne")
 
-        card = ttk.Frame(container, padding=18, style="Card.TFrame")
-        card.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(16, 0))
+        card = ttk.Frame(container, padding=(22, 18), style="Card.TFrame")
+        card.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(18, 0))
+
+        ttk.Label(card, text="입력 설정", style="Section.TLabel").grid(
+            row=0, column=0, columnspan=3, sticky="w", pady=(0, 8)
+        )
 
         ttk.Label(card, text="국가 선택", anchor="w", width=18, style="Field.TLabel").grid(
-            row=0, column=0, sticky="w", pady=8
+            row=1, column=0, sticky="w", pady=7
         )
         format_combo = ttk.Combobox(
             card,
             textvariable=self.import_format,
             values=list(IMPORT_FORMATS),
             state="readonly",
-            width=40,
+            width=34,
         )
-        format_combo.grid(row=0, column=1, sticky="w", padx=(8, 8), pady=8)
+        format_combo.grid(row=1, column=1, sticky="w", padx=(8, 8), pady=7)
 
         self._add_file_row(
             card,
-            row=1,
+            row=2,
             label="GL Auto 템플릿 xlsx",
             variable=self.template_path,
             command=self.select_template,
@@ -1111,7 +624,7 @@ class GlInputCopyApp(BaseTk):
         )
         self._add_file_row(
             card,
-            row=2,
+            row=3,
             label="Source GL xlsx",
             variable=self.export_path,
             command=self.select_export,
@@ -1119,11 +632,18 @@ class GlInputCopyApp(BaseTk):
         )
         self._add_file_row(
             card,
-            row=3,
+            row=4,
             label="결과 저장 경로",
             variable=self.output_path,
             command=self.select_output,
             drop_role="output",
+        )
+
+        ttk.Separator(card, orient="horizontal").grid(
+            row=5, column=0, columnspan=3, sticky="ew", pady=(15, 14)
+        )
+        ttk.Label(card, text="진행 상태", style="Section.TLabel").grid(
+            row=6, column=0, columnspan=3, sticky="w", pady=(0, 8)
         )
 
         self.progress_bar = ttk.Progressbar(
@@ -1133,10 +653,10 @@ class GlInputCopyApp(BaseTk):
             mode="determinate",
             style="Blue.Horizontal.TProgressbar",
         )
-        self.progress_bar.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(18, 8))
+        self.progress_bar.grid(row=7, column=0, columnspan=3, sticky="ew", pady=(0, 9))
 
         ttk.Label(card, textvariable=self.status_text, anchor="w", style="Status.TLabel").grid(
-            row=5, column=0, columnspan=2, sticky="ew"
+            row=8, column=0, columnspan=2, sticky="ew"
         )
 
         self.run_button = ttk.Button(
@@ -1146,17 +666,24 @@ class GlInputCopyApp(BaseTk):
             width=14,
             style="Primary.TButton",
         )
-        self.run_button.grid(row=5, column=2, sticky="e", pady=(4, 0))
+        self.run_button.grid(row=8, column=2, sticky="e")
+
+        ttk.Separator(card, orient="horizontal").grid(
+            row=9, column=0, columnspan=3, sticky="ew", pady=(16, 14)
+        )
+        ttk.Label(card, text="실행 결과", style="Section.TLabel").grid(
+            row=10, column=0, columnspan=3, sticky="w", pady=(0, 9)
+        )
 
         summary_frame = ttk.Frame(card, style="Card.TFrame")
-        summary_frame.grid(row=6, column=0, columnspan=3, sticky="ew", pady=(18, 0))
+        summary_frame.grid(row=11, column=0, columnspan=3, sticky="nsew")
 
         result_frame = ttk.Frame(summary_frame, style="Card.TFrame")
         result_frame.grid(row=0, column=0, sticky="ew")
         status_frame = tk.Frame(
             result_frame,
-            width=74,
-            height=84,
+            width=66,
+            height=82,
             bg="#FFFFFF",
             highlightbackground="#E5E7EB",
             highlightthickness=1,
@@ -1170,8 +697,8 @@ class GlInputCopyApp(BaseTk):
             height=5,
             wrap="word",
             relief="flat",
-            bg="#F8FAFC",
-            fg="#374151",
+            bg="#F6F9F9",
+            fg="#34454C",
             font=("Segoe UI", 9),
             padx=10,
             pady=8,
@@ -1211,14 +738,16 @@ class GlInputCopyApp(BaseTk):
 
         container.grid_columnconfigure(0, weight=1)
         container.grid_columnconfigure(1, weight=0)
+        container.grid_rowconfigure(1, weight=1)
         card.grid_columnconfigure(1, weight=1)
+        card.grid_rowconfigure(11, weight=1)
         summary_frame.grid_columnconfigure(0, weight=1)
 
     def _add_file_row(self, parent, row, label, variable, command, drop_role):
         ttk.Label(parent, text=label, anchor="w", width=18, style="Field.TLabel").grid(
             row=row, column=0, sticky="w", pady=8
         )
-        entry = ttk.Entry(parent, textvariable=variable, width=72)
+        entry = ttk.Entry(parent, textvariable=variable, width=68)
         entry.grid(
             row=row, column=1, sticky="ew", padx=(8, 8), pady=8
         )
@@ -1382,8 +911,11 @@ class GlInputCopyApp(BaseTk):
             raise ValueError("GL Auto 템플릿 파일을 찾을 수 없습니다.")
         if not os.path.isfile(export_path):
             raise ValueError("Source GL 파일을 찾을 수 없습니다.")
-        if os.path.abspath(template_path) == os.path.abspath(output_path):
+        normalized_output = os.path.normcase(os.path.abspath(output_path))
+        if os.path.normcase(os.path.abspath(template_path)) == normalized_output:
             raise ValueError("결과 파일은 GL Auto 템플릿과 다른 경로로 저장하세요.")
+        if os.path.normcase(os.path.abspath(export_path)) == normalized_output:
+            raise ValueError("결과 파일은 Source GL과 다른 경로로 저장하세요.")
 
         output_dir = os.path.dirname(output_path)
         if output_dir and not os.path.isdir(output_dir):
