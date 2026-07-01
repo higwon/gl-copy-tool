@@ -15,7 +15,7 @@ except ImportError:
 
 
 APP_NAME = "GL Input Copy Tool"
-APP_VERSION = "0.3.2"
+APP_VERSION = "0.3.3"
 APP_AUTHOR = "DA_GYEONG"
 APP_ICON = "assets/app.ico"
 HEADER_LOGO = "assets/logo_header.png"
@@ -34,6 +34,7 @@ IMPORT_FORMATS = {
     "Netherlands": {"transform": "netherlands_gl_transactions"},
     "Austria": {"transform": "austria_fibu_export"},
     "Hungary": {"transform": "hungary_novitax_export"},
+    "Poland": {"transform": "poland_accounting_entries"},
 }
 BaseTk = TkinterDnD.Tk if TkinterDnD else tk.Tk
 CELL_REFERENCE_RE = re.compile(r"(?<![A-Za-z0-9_])(\$?[A-Z]{1,3})(\$?)(\d+)")
@@ -157,9 +158,6 @@ def build_row_style_template(sheet, source_row_number):
             (
                 column_number,
                 copy.copy(source_cell._style) if source_cell.has_style else None,
-                source_cell.number_format,
-                copy.copy(source_cell.alignment) if source_cell.alignment else None,
-                copy.copy(source_cell.protection) if source_cell.protection else None,
             )
         )
 
@@ -173,18 +171,12 @@ def apply_row_style_template(sheet, target_row_number, row_style, cell_styles):
     target_dimension.outlineLevel = row_style["outlineLevel"]
     target_dimension.collapsed = row_style["collapsed"]
 
-    for column_number, style, number_format, alignment, protection in cell_styles:
+    for column_number, style in cell_styles:
         target_cell = sheet.cell(row=target_row_number, column=column_number)
         if is_read_only_merged_cell(target_cell):
             continue
-        if style is not None:
+        if target_cell._style != style:
             target_cell._style = style
-        if number_format:
-            target_cell.number_format = number_format
-        if alignment:
-            target_cell.alignment = alignment
-        if protection:
-            target_cell.protection = protection
 
 
 def expand_target_rows(sheet, header_row, data_row_count, progress_callback=None):
@@ -193,23 +185,18 @@ def expand_target_rows(sheet, header_row, data_row_count, progress_callback=None
 
     first_data_row = header_row + 1
     last_data_row = header_row + data_row_count
-    current_max_row = sheet.max_row
-
-    if current_max_row >= last_data_row:
-        return
-
-    style_source_row = max(first_data_row, current_max_row)
+    style_source_row = first_data_row
     row_style, cell_styles = build_row_style_template(sheet, style_source_row)
-    rows_to_add = last_data_row - current_max_row
-    for row_number in range(current_max_row + 1, last_data_row + 1):
+    rows_to_prepare = data_row_count
+    for row_number in range(first_data_row, last_data_row + 1):
         apply_row_style_template(sheet, row_number, row_style, cell_styles)
-        processed = row_number - current_max_row
-        if processed % 5000 == 0 or processed == rows_to_add:
-            percent = 42 + int((processed / rows_to_add) * 2)
+        processed = row_number - header_row
+        if processed % 5000 == 0 or processed == rows_to_prepare:
+            percent = 42 + int((processed / rows_to_prepare) * 2)
             report_progress(
                 progress_callback,
                 min(percent, 44),
-                f"GL Input 행 서식을 확장하는 중... ({processed}/{rows_to_add})",
+                f"GL Input 행 서식을 준비하는 중... ({processed}/{rows_to_prepare})",
             )
 
 
@@ -594,6 +581,64 @@ def build_source_records_hungary(source_ws, progress_callback=None):
     return records
 
 
+def build_source_records_poland(source_ws, progress_callback=None):
+    required_headers = [
+        "Konto",
+        "Data księgowania",
+        "Kwota Wn",
+        "Kwota Ma",
+        "Nazwa podmiotu",
+        "Opis",
+    ]
+    source_header_row, source_columns = find_header_row_and_columns(source_ws, required_headers)
+    records = []
+    total_rows = max(source_ws.max_row - source_header_row, 1)
+
+    for row_number in range(source_header_row + 1, source_ws.max_row + 1):
+        date_value = source_ws.cell(
+            row=row_number,
+            column=source_columns["Data księgowania"],
+        ).value
+        if not hasattr(date_value, "year"):
+            continue
+
+        account_code = source_ws.cell(row=row_number, column=source_columns["Konto"]).value
+        debit = source_ws.cell(row=row_number, column=source_columns["Kwota Wn"]).value
+        credit = source_ws.cell(row=row_number, column=source_columns["Kwota Ma"]).value
+        partner = source_ws.cell(
+            row=row_number,
+            column=source_columns["Nazwa podmiotu"],
+        ).value
+        description = source_ws.cell(row=row_number, column=source_columns["Opis"]).value
+
+        if is_empty_value(account_code) and is_empty_value(debit) and is_empty_value(credit):
+            continue
+
+        records.append(
+            {
+                MATCH_HEADERS[0]: date_value,
+                MATCH_HEADERS[1]: normalize_account_code_value(account_code),
+                MATCH_HEADERS[2]: normalize_amount(debit, absolute=True),
+                MATCH_HEADERS[3]: normalize_amount(credit, absolute=True),
+                MATCH_HEADERS[4]: partner,
+                MATCH_HEADERS[5]: description,
+            }
+        )
+
+        if len(records) % 1000 == 0:
+            percent = 35 + int(((row_number - source_header_row) / total_rows) * 7)
+            report_progress(
+                progress_callback,
+                min(percent, 42),
+                f"Poland GL 거래행을 읽는 중... ({len(records)}행)",
+            )
+
+    if not records:
+        raise ValueError("Poland GL에서 날짜가 있는 거래 데이터를 찾지 못했습니다.")
+
+    return records
+
+
 def build_source_records(source_ws, import_format, progress_callback=None):
     transform = IMPORT_FORMATS[import_format]["transform"]
     if transform == "standard_debit_credit":
@@ -604,6 +649,8 @@ def build_source_records(source_ws, import_format, progress_callback=None):
         return build_source_records_austria(source_ws, progress_callback)
     if transform == "hungary_novitax_export":
         return build_source_records_hungary(source_ws, progress_callback)
+    if transform == "poland_accounting_entries":
+        return build_source_records_poland(source_ws, progress_callback)
     raise ValueError(f"지원하지 않는 국가 양식입니다: {import_format}")
 
 
@@ -891,7 +938,7 @@ class GlInputCopyApp(BaseTk):
         format_combo.grid(row=0, column=1, sticky="w", padx=(8, 8), pady=8)
         ttk.Label(
             card,
-            text="Korea / Netherlands / Austria / Hungary를 지원합니다.",
+            text="Korea / Netherlands / Austria / Hungary / Poland를 지원합니다.",
             style="Hint.TLabel",
         ).grid(row=0, column=2, sticky="e", pady=8)
 

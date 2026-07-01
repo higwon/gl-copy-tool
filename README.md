@@ -53,7 +53,7 @@ python -m PyInstaller GLInputCopyTool.spec --noconfirm
 - GL Auto 템플릿의 `2. GL Input` 시트에 Source GL을 복사합니다.
 - Source GL은 첫 번째 시트를 사용합니다.
 - 국가 선택 콤보박스로 Source GL 양식을 선택할 수 있습니다.
-- Korea, Netherlands, Austria, Hungary 국가 양식을 지원합니다.
+- Korea, Netherlands, Austria, Hungary, Poland 국가 양식을 지원합니다.
 - 대용량 파일 처리 중 progress bar와 경과 시간이 계속 갱신됩니다.
 - xlsx 파일 경로 입력칸에 파일을 드래그앤드랍할 수 있습니다.
 - 실행 결과 영역은 긴 메시지와 파일 경로를 볼 수 있도록 스크롤을 지원합니다.
@@ -89,6 +89,7 @@ GL Auto 템플릿에는 이름이 정확히 `2. GL Input`인 시트가 있어야
 - `Netherlands`
 - `Austria`
 - `Hungary`
+- `Poland`
 
 국가별 Source GL 구조에 맞춰 컬럼 매핑, 금액 처리, 거래처명/적요 매핑 방식을 변환합니다.
 
