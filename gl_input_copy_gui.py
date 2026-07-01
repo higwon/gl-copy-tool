@@ -1,5 +1,6 @@
 import copy
 import os
+import re
 import sys
 import threading
 import time
@@ -14,7 +15,7 @@ except ImportError:
 
 
 APP_NAME = "GL Input Copy Tool"
-APP_VERSION = "0.3.1"
+APP_VERSION = "0.3.2"
 APP_AUTHOR = "DA_GYEONG"
 APP_ICON = "assets/app.ico"
 HEADER_LOGO = "assets/logo_header.png"
@@ -27,13 +28,15 @@ COA_SHEET_NAME = "1. COA"
 ACCOUNT_CODE_HEADER = "계정코드"
 MATCH_HEADERS = ["날짜", "계정코드", "차변(EUR)", "대변(EUR)", "거래처명", "적요"]
 HEADER_SCAN_ROWS = 30
-DEFAULT_IMPORT_FORMAT = "Korea - Standard"
+DEFAULT_IMPORT_FORMAT = "Korea"
 IMPORT_FORMATS = {
-    "Korea - Standard": {"transform": "standard_debit_credit"},
-    "Netherlands - GL Transactions Report": {"transform": "netherlands_gl_transactions"},
-    "Austria - FIBU Export": {"transform": "austria_fibu_export"},
+    "Korea": {"transform": "standard_debit_credit"},
+    "Netherlands": {"transform": "netherlands_gl_transactions"},
+    "Austria": {"transform": "austria_fibu_export"},
+    "Hungary": {"transform": "hungary_novitax_export"},
 }
 BaseTk = TkinterDnD.Tk if TkinterDnD else tk.Tk
+CELL_REFERENCE_RE = re.compile(r"(?<![A-Za-z0-9_])(\$?[A-Z]{1,3})(\$?)(\d+)")
 
 
 def resource_path(relative_path):
@@ -138,7 +141,53 @@ def copy_row_style(sheet, source_row_number, target_row_number):
         copy_cell_style(source_cell, target_cell)
 
 
-def expand_target_rows(sheet, header_row, data_row_count):
+def build_row_style_template(sheet, source_row_number):
+    source_dimension = sheet.row_dimensions[source_row_number]
+    row_style = {
+        "height": source_dimension.height,
+        "hidden": source_dimension.hidden,
+        "outlineLevel": source_dimension.outlineLevel,
+        "collapsed": source_dimension.collapsed,
+    }
+    cell_styles = []
+
+    for column_number in range(1, sheet.max_column + 1):
+        source_cell = sheet.cell(row=source_row_number, column=column_number)
+        cell_styles.append(
+            (
+                column_number,
+                copy.copy(source_cell._style) if source_cell.has_style else None,
+                source_cell.number_format,
+                copy.copy(source_cell.alignment) if source_cell.alignment else None,
+                copy.copy(source_cell.protection) if source_cell.protection else None,
+            )
+        )
+
+    return row_style, cell_styles
+
+
+def apply_row_style_template(sheet, target_row_number, row_style, cell_styles):
+    target_dimension = sheet.row_dimensions[target_row_number]
+    target_dimension.height = row_style["height"]
+    target_dimension.hidden = row_style["hidden"]
+    target_dimension.outlineLevel = row_style["outlineLevel"]
+    target_dimension.collapsed = row_style["collapsed"]
+
+    for column_number, style, number_format, alignment, protection in cell_styles:
+        target_cell = sheet.cell(row=target_row_number, column=column_number)
+        if is_read_only_merged_cell(target_cell):
+            continue
+        if style is not None:
+            target_cell._style = style
+        if number_format:
+            target_cell.number_format = number_format
+        if alignment:
+            target_cell.alignment = alignment
+        if protection:
+            target_cell.protection = protection
+
+
+def expand_target_rows(sheet, header_row, data_row_count, progress_callback=None):
     if data_row_count <= 0:
         return
 
@@ -150,8 +199,18 @@ def expand_target_rows(sheet, header_row, data_row_count):
         return
 
     style_source_row = max(first_data_row, current_max_row)
+    row_style, cell_styles = build_row_style_template(sheet, style_source_row)
+    rows_to_add = last_data_row - current_max_row
     for row_number in range(current_max_row + 1, last_data_row + 1):
-        copy_row_style(sheet, style_source_row, row_number)
+        apply_row_style_template(sheet, row_number, row_style, cell_styles)
+        processed = row_number - current_max_row
+        if processed % 5000 == 0 or processed == rows_to_add:
+            percent = 42 + int((processed / rows_to_add) * 2)
+            report_progress(
+                progress_callback,
+                min(percent, 44),
+                f"GL Input 행 서식을 확장하는 중... ({processed}/{rows_to_add})",
+            )
 
 
 def adjust_table_ranges(sheet, header_row, data_row_count):
@@ -195,11 +254,22 @@ def delete_rows_below_input(sheet, header_row, data_row_count):
     return deleted_row_count
 
 
+def translate_formula_row_delta(formula, row_delta):
+    if row_delta == 0:
+        return formula
+
+    def replace_cell_reference(match):
+        column, row_absolute, row_number = match.groups()
+        if row_absolute:
+            return match.group(0)
+        return f"{column}{int(row_number) + row_delta}"
+
+    return CELL_REFERENCE_RE.sub(replace_cell_reference, formula)
+
+
 def fill_formula_columns(sheet, header_row, data_row_count, formula_columns):
     if data_row_count <= 0:
         return
-
-    from openpyxl.formula.translate import Translator
 
     first_data_row = header_row + 1
     last_data_row = header_row + data_row_count
@@ -222,13 +292,10 @@ def fill_formula_columns(sheet, header_row, data_row_count, formula_columns):
             if is_read_only_merged_cell(target_cell):
                 continue
 
-            try:
-                target_cell.value = Translator(
-                    template_cell.value,
-                    origin=template_cell.coordinate,
-                ).translate_formula(target_cell.coordinate)
-            except Exception:
-                target_cell.value = template_cell.value
+            target_cell.value = translate_formula_row_delta(
+                template_cell.value,
+                row_number - template_cell.row,
+            )
 
             if template_cell.has_style:
                 target_cell._style = copy.copy(template_cell._style)
@@ -469,6 +536,64 @@ def build_source_records_austria(source_ws, progress_callback=None):
     return records
 
 
+def build_source_records_hungary(source_ws, progress_callback=None):
+    required_headers = [
+        "Budgetary account",
+        "Számviteli teljesítés",
+        "Tartozik",
+        "Követel",
+        "Megjegyzés",
+        "Partner",
+    ]
+    source_header_row, source_columns = find_header_row_and_columns(source_ws, required_headers)
+    records = []
+    total_rows = max(source_ws.max_row - source_header_row, 1)
+
+    for row_number in range(source_header_row + 1, source_ws.max_row + 1):
+        date_value = source_ws.cell(
+            row=row_number,
+            column=source_columns["Számviteli teljesítés"],
+        ).value
+        if not hasattr(date_value, "year"):
+            continue
+
+        account_code = source_ws.cell(
+            row=row_number,
+            column=source_columns["Budgetary account"],
+        ).value
+        debit = source_ws.cell(row=row_number, column=source_columns["Tartozik"]).value
+        credit = source_ws.cell(row=row_number, column=source_columns["Követel"]).value
+        description = source_ws.cell(row=row_number, column=source_columns["Megjegyzés"]).value
+        partner = source_ws.cell(row=row_number, column=source_columns["Partner"]).value
+
+        if is_empty_value(account_code) and is_empty_value(debit) and is_empty_value(credit):
+            continue
+
+        records.append(
+            {
+                "날짜": date_value,
+                "계정코드": normalize_account_code_value(account_code),
+                "차변(EUR)": normalize_amount(debit, absolute=True),
+                "대변(EUR)": normalize_amount(credit, absolute=True),
+                "거래처명": partner,
+                "적요": description,
+            }
+        )
+
+        if len(records) % 1000 == 0:
+            percent = 35 + int(((row_number - source_header_row) / total_rows) * 7)
+            report_progress(
+                progress_callback,
+                min(percent, 42),
+                f"Hungary Novitax 거래행을 읽는 중... ({len(records)}행)",
+            )
+
+    if not records:
+        raise ValueError("Hungary Novitax Export에서 날짜가 있는 거래 데이터를 찾지 못했습니다.")
+
+    return records
+
+
 def build_source_records(source_ws, import_format, progress_callback=None):
     transform = IMPORT_FORMATS[import_format]["transform"]
     if transform == "standard_debit_credit":
@@ -477,6 +602,8 @@ def build_source_records(source_ws, import_format, progress_callback=None):
         return build_source_records_netherlands(source_ws, progress_callback)
     if transform == "austria_fibu_export":
         return build_source_records_austria(source_ws, progress_callback)
+    if transform == "hungary_novitax_export":
+        return build_source_records_hungary(source_ws, progress_callback)
     raise ValueError(f"지원하지 않는 국가 양식입니다: {import_format}")
 
 
@@ -534,7 +661,7 @@ def copy_export_to_gl_input(
     source_records = build_source_records(source_ws, import_format, progress_callback)
 
     report_progress(progress_callback, 42, "GL Input 표 범위와 서식을 준비하는 중...")
-    expand_target_rows(target_ws, target_header_row, len(source_records))
+    expand_target_rows(target_ws, target_header_row, len(source_records), progress_callback)
     adjusted_table_count = adjust_table_ranges(
         target_ws,
         target_header_row,
@@ -764,7 +891,7 @@ class GlInputCopyApp(BaseTk):
         format_combo.grid(row=0, column=1, sticky="w", padx=(8, 8), pady=8)
         ttk.Label(
             card,
-            text="Korea / Netherlands / Austria 양식을 지원합니다.",
+            text="Korea / Netherlands / Austria / Hungary를 지원합니다.",
             style="Hint.TLabel",
         ).grid(row=0, column=2, sticky="e", pady=8)
 
