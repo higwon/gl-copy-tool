@@ -436,8 +436,8 @@ class GlInputCopyApp(BaseTk):
         super().__init__()
 
         self.title(APP_NAME)
-        self.geometry("940x650")
-        self.minsize(820, 600)
+        self.geometry("940x720")
+        self.minsize(820, 680)
         self.resizable(True, True)
         self.configure(bg="#F3F5F7")
 
@@ -683,7 +683,7 @@ class GlInputCopyApp(BaseTk):
         status_frame = tk.Frame(
             result_frame,
             width=66,
-            height=82,
+            height=100,
             bg="#FFFFFF",
             highlightbackground="#E5E7EB",
             highlightthickness=1,
@@ -694,7 +694,7 @@ class GlInputCopyApp(BaseTk):
         self.status_image_label.place(relx=0.5, rely=0.5, anchor="center")
         self.summary_view = tk.Text(
             result_frame,
-            height=5,
+            height=6,
             wrap="word",
             relief="flat",
             bg="#F6F9F9",
