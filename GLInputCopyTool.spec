@@ -1,12 +1,15 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+from PyInstaller.utils.hooks import collect_data_files
+
+tkinterdnd2_datas = collect_data_files('tkinterdnd2')
 
 a = Analysis(
     ['gl_input_copy_gui.py'],
     pathex=[],
     binaries=[],
-    datas=[('assets', 'assets')],
-    hiddenimports=[],
+    datas=[('assets', 'assets')] + tkinterdnd2_datas,
+    hiddenimports=['tkinterdnd2'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

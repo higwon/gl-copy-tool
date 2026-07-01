@@ -1,5 +1,38 @@
 # Release Notes
 
+## v0.3.0
+
+국가별 Import Data 양식 지원과 대용량 처리 진행 표시를 개선한 릴리즈입니다.
+
+### 추가
+
+- `Netherlands - GL Transactions Report` 양식을 추가했습니다.
+  - 계정 블록 행에서 GL 계정코드를 추출합니다.
+  - 날짜가 있는 거래행만 GL Input으로 변환합니다.
+  - `Date`, `Debit`, `Credit`, `Account name`, `Description` 컬럼을 표준 GL Input 컬럼으로 매핑합니다.
+- `Austria - FIBU Export` 양식을 추가했습니다.
+  - `Beleg-Dat`, `Kto-Nr`, `GW-Soll`, `GW-Haben`, `Text` 컬럼을 표준 GL Input 컬럼으로 매핑합니다.
+  - `GW-Haben`은 대변 금액으로 양수 처리합니다.
+- Import Data 양식 콤보박스를 실제 지원 양식만 표시하도록 정리했습니다.
+- 대용량 파일 처리 중 progress bar가 멈춘 것처럼 보이지 않도록 개선했습니다.
+  - 파일 열기/저장 중에는 움직이는 progress bar를 표시합니다.
+  - 작업 중 경과 시간을 표시합니다.
+  - 거래행 파싱 중 처리 행 수를 주기적으로 표시합니다.
+- PyInstaller 빌드에 `tkinterdnd2` 리소스를 포함해 드래그앤드랍 동작을 보강했습니다.
+
+### 수정
+
+- Import Data 행 수가 GL Input 기존 표보다 많을 때 Excel 표 범위와 행 서식이 확장되지 않던 문제를 수정했습니다.
+- 확장된 행에서도 날짜 형식, 계정코드 텍스트 형식, 수식 컬럼이 유지되도록 수정했습니다.
+
+### 검증
+
+- Python 문법 체크를 통과했습니다.
+- Korea 샘플 변환을 확인했습니다.
+- Netherlands 실제 GL 파일 17,360행 변환을 확인했습니다.
+- Austria 실제 GL 파일 7,138행 변환을 확인했습니다.
+- 로컬 Windows 폴더형 PyInstaller 빌드를 확인했습니다.
+
 ## v0.2.2
 
 앱 이미지와 아이콘을 적용한 UI 개선 릴리즈입니다.

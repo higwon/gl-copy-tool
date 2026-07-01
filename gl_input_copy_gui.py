@@ -2,6 +2,7 @@ import copy
 import os
 import sys
 import threading
+import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
@@ -13,7 +14,7 @@ except ImportError:
 
 
 APP_NAME = "GL Input Copy Tool"
-APP_VERSION = "0.2.2"
+APP_VERSION = "0.3.0"
 APP_AUTHOR = "DA_GYEONG"
 APP_ICON = "assets/app.ico"
 HEADER_LOGO = "assets/logo_header.png"
@@ -28,10 +29,8 @@ HEADER_SCAN_ROWS = 30
 DEFAULT_IMPORT_FORMAT = "Korea - Standard"
 IMPORT_FORMATS = {
     "Korea - Standard": {"transform": "standard_debit_credit"},
-    "Germany - SAP Export": {"transform": "standard_debit_credit"},
-    "Japan - Standard": {"transform": "standard_debit_credit"},
-    "China - Standard": {"transform": "standard_debit_credit"},
-    "Vietnam - Standard": {"transform": "standard_debit_credit"},
+    "Netherlands - GL Transactions Report": {"transform": "netherlands_gl_transactions"},
+    "Austria - FIBU Export": {"transform": "austria_fibu_export"},
 }
 BaseTk = TkinterDnD.Tk if TkinterDnD else tk.Tk
 
@@ -111,25 +110,78 @@ def clear_target_data(sheet, header_row, target_columns, formula_columns, min_cl
                 cell.value = None
 
 
-def delete_rows_below_input(sheet, header_row, data_row_count):
+def copy_cell_style(source_cell, target_cell):
+    if source_cell.has_style:
+        target_cell._style = copy.copy(source_cell._style)
+    if source_cell.number_format:
+        target_cell.number_format = source_cell.number_format
+    if source_cell.alignment:
+        target_cell.alignment = copy.copy(source_cell.alignment)
+    if source_cell.protection:
+        target_cell.protection = copy.copy(source_cell.protection)
+
+
+def copy_row_style(sheet, source_row_number, target_row_number):
+    source_dimension = sheet.row_dimensions[source_row_number]
+    target_dimension = sheet.row_dimensions[target_row_number]
+    target_dimension.height = source_dimension.height
+    target_dimension.hidden = source_dimension.hidden
+    target_dimension.outlineLevel = source_dimension.outlineLevel
+    target_dimension.collapsed = source_dimension.collapsed
+
+    for column_number in range(1, sheet.max_column + 1):
+        source_cell = sheet.cell(row=source_row_number, column=column_number)
+        target_cell = sheet.cell(row=target_row_number, column=column_number)
+        if is_read_only_merged_cell(target_cell):
+            continue
+        copy_cell_style(source_cell, target_cell)
+
+
+def expand_target_rows(sheet, header_row, data_row_count):
+    if data_row_count <= 0:
+        return
+
+    first_data_row = header_row + 1
+    last_data_row = header_row + data_row_count
+    current_max_row = sheet.max_row
+
+    if current_max_row >= last_data_row:
+        return
+
+    style_source_row = max(first_data_row, current_max_row)
+    for row_number in range(current_max_row + 1, last_data_row + 1):
+        copy_row_style(sheet, style_source_row, row_number)
+
+
+def adjust_table_ranges(sheet, header_row, data_row_count):
     from openpyxl.utils import get_column_letter
     from openpyxl.utils.cell import range_boundaries
 
-    first_delete_row = header_row + data_row_count + 1
-    last_keep_row = first_delete_row - 1
+    last_keep_row = header_row + data_row_count
     adjusted_table_count = 0
 
     for table in sheet.tables.values():
         min_col, min_row, max_col, max_row = range_boundaries(table.ref)
-        if min_row <= last_keep_row < max_row:
-            table.ref = (
-                f"{get_column_letter(min_col)}{min_row}:"
-                f"{get_column_letter(max_col)}{last_keep_row}"
-            )
+        if not (min_row <= header_row <= max_row or min_row <= last_keep_row <= max_row):
+            continue
+
+        new_max_row = max(last_keep_row, min_row)
+        new_ref = (
+            f"{get_column_letter(min_col)}{min_row}:"
+            f"{get_column_letter(max_col)}{new_max_row}"
+        )
+        if table.ref != new_ref:
+            table.ref = new_ref
             if table.autoFilter:
-                table.autoFilter.ref = table.ref
+                table.autoFilter.ref = new_ref
             adjusted_table_count += 1
 
+    return adjusted_table_count
+
+
+def delete_rows_below_input(sheet, header_row, data_row_count):
+    first_delete_row = header_row + data_row_count + 1
+    last_keep_row = first_delete_row - 1
     deleted_row_count = 0
     if sheet.max_row >= first_delete_row:
         deleted_row_count = sheet.max_row - first_delete_row + 1
@@ -139,7 +191,7 @@ def delete_rows_below_input(sheet, header_row, data_row_count):
         if row_number > last_keep_row:
             del sheet.row_dimensions[row_number]
 
-    return deleted_row_count, adjusted_table_count
+    return deleted_row_count
 
 
 def fill_formula_columns(sheet, header_row, data_row_count, formula_columns):
@@ -187,6 +239,204 @@ def copy_cell_value_only(source_cell, target_cell):
     target_cell.value = source_cell.value
 
 
+def is_empty_value(value):
+    return value is None or value == "" or (isinstance(value, str) and not value.strip())
+
+
+def parse_account_block(value):
+    if not isinstance(value, str):
+        return None
+
+    text = value.strip()
+    if " - " not in text:
+        return None
+
+    code, name = text.split(" - ", 1)
+    code = code.strip()
+    if not code:
+        return None
+
+    return code, name.strip()
+
+
+def normalize_account_code_value(value):
+    if value is None:
+        return None
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value).strip()
+
+
+def normalize_amount(value, absolute=False):
+    if is_empty_value(value):
+        return None
+    if isinstance(value, (int, float)):
+        return abs(value) if absolute else value
+    return value
+
+
+def build_source_records_standard(source_ws, progress_callback=None):
+    source_header_row, source_columns = find_header_row_and_columns(source_ws, MATCH_HEADERS)
+    records = []
+    total_rows = max(source_ws.max_row - source_header_row, 1)
+
+    for row_number in range(source_header_row + 1, source_ws.max_row + 1):
+        if not row_has_data(source_ws, row_number, source_columns.values()):
+            continue
+
+        records.append(
+            {
+                header: source_ws.cell(
+                    row=row_number,
+                    column=source_columns[header],
+                ).value
+                for header in MATCH_HEADERS
+            }
+        )
+
+        if len(records) % 1000 == 0:
+            percent = 35 + int(((row_number - source_header_row) / total_rows) * 7)
+            report_progress(
+                progress_callback,
+                min(percent, 42),
+                f"Import Data를 읽는 중... ({len(records)}행 발견)",
+            )
+
+    return records
+
+
+def build_source_records_netherlands(source_ws, progress_callback=None):
+    required_headers = [
+        "Date",
+        "Description",
+        "Debit",
+        "Credit",
+        "Account name",
+    ]
+    source_header_row, source_columns = find_header_row_and_columns(source_ws, required_headers)
+    current_account_code = None
+    records = []
+    total_rows = max(source_ws.max_row - source_header_row, 1)
+
+    for row_number in range(source_header_row + 1, source_ws.max_row + 1):
+        first_value = source_ws.cell(row=row_number, column=1).value
+        second_value = source_ws.cell(row=row_number, column=2).value
+        account_block = parse_account_block(first_value)
+        if account_block and is_empty_value(second_value):
+            current_account_code = normalize_account_code_value(account_block[0])
+            continue
+
+        if not hasattr(first_value, "year"):
+            continue
+
+        if not current_account_code:
+            continue
+
+        debit = source_ws.cell(row=row_number, column=source_columns["Debit"]).value
+        credit = source_ws.cell(row=row_number, column=source_columns["Credit"]).value
+        description = source_ws.cell(row=row_number, column=source_columns["Description"]).value
+        account_name = source_ws.cell(row=row_number, column=source_columns["Account name"]).value
+
+        if is_empty_value(debit) and is_empty_value(credit) and is_empty_value(description):
+            continue
+
+        records.append(
+            {
+                "날짜": first_value,
+                "계정코드": current_account_code,
+                "차변(EUR)": debit,
+                "대변(EUR)": credit,
+                "거래처명": account_name,
+                "적요": description,
+            }
+        )
+
+        if len(records) % 1000 == 0:
+            percent = 35 + int(((row_number - source_header_row) / total_rows) * 7)
+            report_progress(
+                progress_callback,
+                min(percent, 42),
+                f"Netherlands GL 거래행을 읽는 중... ({len(records)}행)",
+            )
+
+    if not records:
+        raise ValueError("Netherlands GL에서 날짜가 있는 거래 데이터를 찾지 못했습니다.")
+
+    return records
+
+
+def build_source_records_austria(source_ws, progress_callback=None):
+    required_headers = [
+        "Kto-Nr",
+        "Beleg-Dat",
+        "Text",
+        "GW-Soll",
+        "GW-Haben",
+    ]
+    source_header_row, source_columns = find_header_row_and_columns(source_ws, required_headers)
+    records = []
+    total_rows = max(source_ws.max_row - source_header_row, 1)
+
+    for row_number in range(source_header_row + 1, source_ws.max_row + 1):
+        date_value = source_ws.cell(row=row_number, column=source_columns["Beleg-Dat"]).value
+        if not hasattr(date_value, "year"):
+            continue
+
+        account_code = source_ws.cell(row=row_number, column=source_columns["Kto-Nr"]).value
+        description = source_ws.cell(row=row_number, column=source_columns["Text"]).value
+        debit = source_ws.cell(row=row_number, column=source_columns["GW-Soll"]).value
+        credit = source_ws.cell(row=row_number, column=source_columns["GW-Haben"]).value
+
+        if is_empty_value(account_code) and is_empty_value(debit) and is_empty_value(credit):
+            continue
+
+        records.append(
+            {
+                "날짜": date_value,
+                "계정코드": normalize_account_code_value(account_code),
+                "차변(EUR)": normalize_amount(debit),
+                "대변(EUR)": normalize_amount(credit, absolute=True),
+                "거래처명": None,
+                "적요": description,
+            }
+        )
+
+        if len(records) % 1000 == 0:
+            percent = 35 + int(((row_number - source_header_row) / total_rows) * 7)
+            report_progress(
+                progress_callback,
+                min(percent, 42),
+                f"Austria FIBU 거래행을 읽는 중... ({len(records)}행)",
+            )
+
+    if not records:
+        raise ValueError("Austria FIBU Export에서 날짜가 있는 거래 데이터를 찾지 못했습니다.")
+
+    return records
+
+
+def build_source_records(source_ws, import_format, progress_callback=None):
+    transform = IMPORT_FORMATS[import_format]["transform"]
+    if transform == "standard_debit_credit":
+        return build_source_records_standard(source_ws, progress_callback)
+    if transform == "netherlands_gl_transactions":
+        return build_source_records_netherlands(source_ws, progress_callback)
+    if transform == "austria_fibu_export":
+        return build_source_records_austria(source_ws, progress_callback)
+    raise ValueError(f"지원하지 않는 Import Data 양식입니다: {import_format}")
+
+
+def set_target_cell_value(header, value, target_cell):
+    if header == ACCOUNT_CODE_HEADER:
+        if value is None:
+            target_cell.value = None
+        else:
+            target_cell.value = normalize_account_code_value(value)
+        target_cell.number_format = "@"
+    else:
+        target_cell.value = value
+
+
 def copy_account_code_as_text(source_cell, target_cell):
     if source_cell.value is None:
         target_cell.value = None
@@ -210,7 +460,7 @@ def copy_export_to_gl_input(
             "'py -m pip install -r requirements.txt'를 실행한 뒤 다시 시도하세요."
         ) from exc
 
-    report_progress(progress_callback, 5, "파일을 여는 중...")
+    report_progress(progress_callback, None, "파일을 여는 중...")
     template_wb = load_workbook(template_path)
     export_wb = load_workbook(export_path, data_only=False)
 
@@ -223,15 +473,18 @@ def copy_export_to_gl_input(
 
     report_progress(progress_callback, 25, "헤더를 찾는 중...")
     formula_columns = find_formula_columns(target_ws)
-    source_header_row, source_columns = find_header_row_and_columns(source_ws, MATCH_HEADERS)
     target_header_row, target_columns = find_header_row_and_columns(target_ws, MATCH_HEADERS)
 
     report_progress(progress_callback, 35, "Import Data를 읽는 중...")
-    source_data_rows = [
-        row_number
-        for row_number in range(source_header_row + 1, source_ws.max_row + 1)
-        if row_has_data(source_ws, row_number, source_columns.values())
-    ]
+    source_records = build_source_records(source_ws, import_format, progress_callback)
+
+    report_progress(progress_callback, 42, "GL Input 표 범위와 서식을 준비하는 중...")
+    expand_target_rows(target_ws, target_header_row, len(source_records))
+    adjusted_table_count = adjust_table_ranges(
+        target_ws,
+        target_header_row,
+        len(source_records),
+    )
 
     report_progress(progress_callback, 45, "기존 GL Input 데이터를 삭제하는 중...")
     clear_target_data(
@@ -239,54 +492,47 @@ def copy_export_to_gl_input(
         target_header_row,
         set(target_columns.values()),
         formula_columns,
-        target_header_row + len(source_data_rows),
+        target_header_row + len(source_records),
     )
 
-    total_rows = max(len(source_data_rows), 1)
-    for row_offset, source_row_number in enumerate(source_data_rows, start=1):
+    total_rows = max(len(source_records), 1)
+    for row_offset, source_record in enumerate(source_records, start=1):
         target_row_number = target_header_row + row_offset
         for header in MATCH_HEADERS:
             target_column = target_columns[header]
             if target_column in formula_columns:
                 continue
 
-            source_cell = source_ws.cell(
-                row=source_row_number,
-                column=source_columns[header],
-            )
             target_cell = target_ws.cell(row=target_row_number, column=target_column)
             if is_read_only_merged_cell(target_cell):
                 continue
             if is_formula_cell(target_cell):
                 continue
 
-            if header == ACCOUNT_CODE_HEADER:
-                copy_account_code_as_text(source_cell, target_cell)
-            else:
-                copy_cell_value_only(source_cell, target_cell)
+            set_target_cell_value(header, source_record.get(header), target_cell)
 
         percent = 45 + int((row_offset / total_rows) * 35)
         report_progress(
             progress_callback,
             percent,
-            f"GL Input에 데이터 입력 중... ({row_offset}/{len(source_data_rows)})",
+            f"GL Input에 데이터 입력 중... ({row_offset}/{len(source_records)})",
         )
 
     report_progress(progress_callback, 82, "수식 컬럼을 정리하는 중...")
-    fill_formula_columns(target_ws, target_header_row, len(source_data_rows), formula_columns)
+    fill_formula_columns(target_ws, target_header_row, len(source_records), formula_columns)
 
     report_progress(progress_callback, 88, "입력 데이터 아래 행을 삭제하는 중...")
-    deleted_row_count, adjusted_table_count = delete_rows_below_input(
+    deleted_row_count = delete_rows_below_input(
         target_ws,
         target_header_row,
-        len(source_data_rows),
+        len(source_records),
     )
 
-    report_progress(progress_callback, 95, "결과 파일을 저장하는 중...")
+    report_progress(progress_callback, None, "결과 파일을 저장하는 중...")
     template_wb.save(output_path)
     report_progress(progress_callback, 100, "완료")
     return {
-        "copied_rows": len(source_data_rows),
+        "copied_rows": len(source_records),
         "deleted_rows": deleted_row_count,
         "adjusted_tables": adjusted_table_count,
         "import_format": import_format,
@@ -317,6 +563,10 @@ class GlInputCopyApp(BaseTk):
         self.status_text = tk.StringVar(value="대기 중")
         self.progress_value = tk.IntVar(value=0)
         self.last_output_path = None
+        self.is_running = False
+        self.run_started_at = None
+        self.current_status_message = "대기 중"
+        self.progress_is_indeterminate = False
 
         self.run_button = None
         self.open_file_button = None
@@ -454,7 +704,7 @@ class GlInputCopyApp(BaseTk):
         format_combo.grid(row=0, column=1, sticky="w", padx=(8, 8), pady=8)
         ttk.Label(
             card,
-            text="현재는 모든 양식이 기본 복사 방식으로 동작합니다.",
+            text="Korea / Netherlands / Austria 양식을 지원합니다.",
             style="Hint.TLabel",
         ).grid(row=0, column=2, sticky="e", pady=8)
 
@@ -588,11 +838,14 @@ class GlInputCopyApp(BaseTk):
         if not DND_FILES:
             return
 
-        widget.drop_target_register(DND_FILES)
-        widget.dnd_bind(
-            "<<Drop>>",
-            lambda event: self._handle_file_drop(event, variable, drop_role),
-        )
+        try:
+            widget.drop_target_register(DND_FILES)
+            widget.dnd_bind(
+                "<<Drop>>",
+                lambda event: self._handle_file_drop(event, variable, drop_role),
+            )
+        except tk.TclError:
+            return
 
     def _handle_file_drop(self, event, variable, drop_role):
         paths = [path for path in self.tk.splitlist(event.data) if path]
@@ -749,8 +1002,36 @@ class GlInputCopyApp(BaseTk):
         self.after(0, self._set_progress, percent, message)
 
     def _set_progress(self, percent, message):
-        self.progress_value.set(percent)
-        self.status_text.set(message)
+        self.current_status_message = message
+        if percent is None:
+            if not self.progress_is_indeterminate:
+                self.progress_bar.configure(mode="indeterminate")
+                self.progress_bar.start(14)
+                self.progress_is_indeterminate = True
+        else:
+            if self.progress_is_indeterminate:
+                self.progress_bar.stop()
+                self.progress_bar.configure(mode="determinate")
+                self.progress_is_indeterminate = False
+            self.progress_value.set(percent)
+        self._refresh_running_status()
+
+    def _refresh_running_status(self):
+        if not self.is_running or not self.run_started_at:
+            self.status_text.set(self.current_status_message)
+            return
+
+        elapsed_seconds = int(time.monotonic() - self.run_started_at)
+        minutes, seconds = divmod(elapsed_seconds, 60)
+        self.status_text.set(
+            f"{self.current_status_message} (경과 {minutes:02d}:{seconds:02d})"
+        )
+
+    def _tick_running_status(self):
+        if not self.is_running:
+            return
+        self._refresh_running_status()
+        self.after(1000, self._tick_running_status)
 
     def set_running(self, is_running):
         state = tk.DISABLED if is_running else tk.NORMAL
@@ -773,11 +1054,15 @@ class GlInputCopyApp(BaseTk):
 
         self.progress_value.set(0)
         self.status_text.set("시작하는 중...")
+        self.current_status_message = "시작하는 중..."
         self._set_summary_text("실행 중입니다. 잠시만 기다려 주세요.")
         self._set_result_status_image(None)
         self.last_output_path = None
         self._set_result_buttons_enabled(False)
+        self.is_running = True
+        self.run_started_at = time.monotonic()
         self.set_running(True)
+        self._tick_running_status()
 
         worker = threading.Thread(
             target=self._run_worker,
@@ -801,9 +1086,16 @@ class GlInputCopyApp(BaseTk):
 
     def _show_success(self, result):
         output_path = result["output_path"]
+        self.is_running = False
+        self.run_started_at = None
+        if self.progress_is_indeterminate:
+            self.progress_bar.stop()
+            self.progress_bar.configure(mode="determinate")
+            self.progress_is_indeterminate = False
         self.set_running(False)
         self.progress_value.set(100)
         self.status_text.set("완료")
+        self.current_status_message = "완료"
         self.last_output_path = output_path
         self._set_result_status_image(self.status_success_image)
         self._set_summary_text(
@@ -822,9 +1114,16 @@ class GlInputCopyApp(BaseTk):
         )
 
     def _show_error(self, message):
+        self.is_running = False
+        self.run_started_at = None
+        if self.progress_is_indeterminate:
+            self.progress_bar.stop()
+            self.progress_bar.configure(mode="determinate")
+            self.progress_is_indeterminate = False
         self.set_running(False)
         self.progress_value.set(0)
         self.status_text.set("실패")
+        self.current_status_message = "실패"
         self.last_output_path = None
         self._set_result_status_image(self.status_error_image)
         self._set_summary_text(f"실패: 작업을 완료하지 못했습니다.\n원인: {message}")
