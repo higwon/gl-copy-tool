@@ -1,3 +1,6 @@
+import re
+
+
 HEADER_SCAN_ROWS = 30
 MATCH_HEADERS = ["날짜", "계정코드", "차변(EUR)", "대변(EUR)", "거래처명", "적요"]
 
@@ -10,7 +13,12 @@ def report_progress(progress_callback, percent, message):
 def normalize_header(value):
     if value is None:
         return ""
-    return "".join(str(value).split()).lower()
+    normalized = "".join(str(value).split()).lower()
+    if re.fullmatch(r"차변\(.*\)", normalized):
+        return "차변()"
+    if re.fullmatch(r"대변\(.*\)", normalized):
+        return "대변()"
+    return normalized
 
 
 def find_header_row_and_columns(sheet, required_headers):

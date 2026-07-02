@@ -5,6 +5,7 @@ from openpyxl import Workbook
 
 from countries import IMPORT_FORMATS, build_source_records
 from countries.common import MATCH_HEADERS
+from gl_input_copy_gui import find_header_row_and_columns
 
 
 def worksheet(headers, rows):
@@ -26,12 +27,22 @@ class CountryParserTests(unittest.TestCase):
 
     def test_korea(self):
         workbook, sheet = worksheet(
-            MATCH_HEADERS,
+            ["날짜", "계정코드", "차변(PLN)", "대변(PLN)", "거래처명", "적요"],
             [[datetime(2026, 1, 1), "1000", -10, 0, "Partner", "Memo"]],
         )
         records = build_source_records(sheet, self.label_for("korea"))
         workbook.close()
         self.assertEqual(10, records[0][MATCH_HEADERS[2]])
+
+    def test_target_headers_allow_different_currency_suffix(self):
+        workbook, sheet = worksheet(
+            ["날짜", "계정코드", "차변(PLN)", "대변(PLN)", "거래처명", "적요"],
+            [],
+        )
+        _, columns = find_header_row_and_columns(sheet, MATCH_HEADERS)
+        workbook.close()
+        self.assertEqual(3, columns[MATCH_HEADERS[2]])
+        self.assertEqual(4, columns[MATCH_HEADERS[3]])
 
     def test_netherlands(self):
         workbook, sheet = worksheet(
@@ -103,6 +114,39 @@ class CountryParserTests(unittest.TestCase):
         self.assertEqual(2, len(records))
         self.assertEqual(70, records[0][MATCH_HEADERS[2]])
         self.assertEqual(70, records[1][MATCH_HEADERS[3]])
+
+    def test_slovenia(self):
+        workbook, sheet = worksheet(
+            ["KONTO", "DATUM_KNJIZENJA", "OPIS_DOKUMENTA", "DEBET", "KREDIT", "PARTNER_NAZIV"],
+            [["0400", datetime(2026, 1, 1), "Memo", -80, 0, "Partner"]],
+        )
+        records = build_source_records(sheet, self.label_for("slovenia"))
+        workbook.close()
+        self.assertEqual(1, len(records))
+        self.assertEqual("0400", records[0][MATCH_HEADERS[1]])
+        self.assertEqual(80, records[0][MATCH_HEADERS[2]])
+
+    def test_germany_reads_account_from_block_title(self):
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.append(["Kanzlei - Jahreskonto 27 EDV-Software"])
+        sheet.append([
+            "Datum",
+            "GU",
+            "BU",
+            "Gegenkonto",
+            "Buchungstext",
+            "USt%",
+            "Belegfeld1",
+            "Umsatz Soll",
+            "Umsatz Haben",
+        ])
+        sheet.append(["01.01.2026", None, None, 9000, "Memo", 0, None, -90, 0])
+        records = build_source_records(sheet, self.label_for("germany"))
+        workbook.close()
+        self.assertEqual(1, len(records))
+        self.assertEqual("27", records[0][MATCH_HEADERS[1]])
+        self.assertEqual(90, records[0][MATCH_HEADERS[2]])
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-from . import austria, czech, hungary, korea, netherlands, poland, slovakia
+from . import austria, czech, germany, hungary, korea, netherlands, poland, slovakia, slovenia
 
 DEFAULT_IMPORT_FORMAT = "한국 (Korea)"
 IMPORT_FORMATS = {
@@ -9,6 +9,8 @@ IMPORT_FORMATS = {
     "폴란드 (Poland)": poland.build_records,
     "체코 (Czech Republic)": czech.build_records,
     "슬로바키아 (Slovakia)": slovakia.build_records,
+    "슬로베니아 (Slovenia)": slovenia.build_records,
+    "독일 (Germany)": germany.build_records,
 }
 
 

@@ -17,7 +17,7 @@ except ImportError:
 
 
 APP_NAME = "GL Input Copy Tool"
-APP_VERSION = "0.4.0"
+APP_VERSION = "0.4.1"
 APP_AUTHOR = "DA_GYEONG"
 APP_ICON = "assets/app.ico"
 HEADER_LOGO = "assets/logo_header.png"
@@ -56,7 +56,12 @@ def is_read_only_merged_cell(cell):
 def normalize_header(value):
     if value is None:
         return ""
-    return "".join(str(value).split()).lower()
+    normalized = "".join(str(value).split()).lower()
+    if re.fullmatch(r"차변\(.*\)", normalized):
+        return "차변()"
+    if re.fullmatch(r"대변\(.*\)", normalized):
+        return "대변()"
+    return normalized
 
 
 def find_header_row_and_columns(sheet, required_headers):
